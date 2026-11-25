@@ -124,20 +124,38 @@ async function loadTeam() {
   const data = JSON.parse(new TextDecoder().decode(await decryptBuf(buf)));
   setData(data.songs, data.setlists);
 }
+const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 function lockScreen(meta, inviteFailed) {
   document.body.classList.add('locked');
   $('#app').innerHTML = `<div class="card lock"><h1>찬양팀 콘티</h1>
     <p class="sub">${inviteFailed ? '초대 링크가 만료됐어요. 팀 비밀번호를 입력해 주세요' : '팀 비밀번호를 입력해 주세요'}</p>
-    <form id="lockform"><input id="pw" type="password" autocomplete="current-password" placeholder="비밀번호" autofocus>
+    <form id="lockform">
+      <div class="pwrow"><input id="pw" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="비밀번호 또는 초대 링크 붙여넣기" autofocus>
+        <button type="button" class="btn small" id="pwtoggle">보기</button></div>
       <label class="row" style="gap:6px;margin-top:10px;font-size:14px"><input type="checkbox" id="remember" checked>이 기기에서 기억하기</label>
       <button class="btn primary" style="width:100%;justify-content:center;margin-top:14px">열기</button>
+      ${standalone() ? '<p class="sub" style="margin:10px 0 0;font-size:13px">📱 홈 화면 앱은 처음 한 번 비밀번호나 초대 링크를 넣어야 해요. 카톡의 초대 링크를 길게 눌러 복사한 뒤 위 칸에 붙여넣어도 돼요.</p>' : ''}
       <p id="pwmsg" class="sub" style="margin:10px 0 0;color:var(--warn)"></p></form></div>`;
+  $('#pwtoggle').addEventListener('click', () => {
+    const i = $('#pw'); const show = i.type === 'password';
+    i.type = show ? 'text' : 'password'; $('#pwtoggle').textContent = show ? '숨기기' : '보기'; i.focus();
+  });
   return new Promise((resolve) => {
     $('#lockform').addEventListener('submit', async (e) => {
       e.preventDefault();
       $('#pwmsg').textContent = '확인 중…';
-      const key = await deriveKey($('#pw').value.trim(), meta);
-      if (!(await tryKey(key, meta))) { $('#pwmsg').textContent = '비밀번호가 맞지 않아요'; return; }
+      const val = $('#pw').value.trim().normalize('NFC');
+      // 초대 링크(또는 열쇠)를 붙여넣은 경우
+      const inv = val.match(/#k=([A-Za-z0-9_-]{40,})/) || val.match(/^([A-Za-z0-9_-]{43})$/);
+      let key = null;
+      if (inv) {
+        const raw = inv[1].replace(/-/g, '+').replace(/_/g, '/');
+        key = await crypto.subtle.importKey('raw', b64(raw + '==='.slice((raw.length + 3) % 4)), 'AES-GCM', true, ['decrypt']).catch(() => null);
+        if (!(key && (await tryKey(key, meta)))) { $('#pwmsg').textContent = '초대 링크가 만료됐어요. 인도자에게 새 링크를 받아 주세요'; return; }
+      } else {
+        key = await deriveKey(val, meta);
+        if (!(await tryKey(key, meta))) { $('#pwmsg').textContent = '비밀번호가 맞지 않아요'; return; }
+      }
       if ($('#remember').checked) {
         const raw = new Uint8Array(await crypto.subtle.exportKey('raw', key));
         try { localStorage.setItem(KEY_STORE, btoa(String.fromCharCode(...raw))); } catch {}
@@ -670,7 +688,7 @@ function renderAdmin() {
       <p class="sub" style="margin:0 0 8px">팀원이 사이트에 들어올 때 쓰는 비밀번호예요.</p>
       <div class="row"><span>현재 비밀번호:</span> <b id="curpw">••••••</b>
         <button class="btn small" data-act="pw-show">보기</button></div>
-      <div class="field"><label>새 비밀번호 (4자 이상)</label><input type="password" id="pw1" autocomplete="new-password"></div>
+      <div class="field"><label>새 비밀번호 (영문·숫자 4자 이상, 한글·띄어쓰기 안 됨)</label><input type="password" id="pw1" autocomplete="new-password"></div>
       <div class="field"><label>새 비밀번호 확인</label><input type="password" id="pw2" autocomplete="new-password"></div>
       <div class="row" style="margin-top:12px"><button class="btn primary" data-act="pw-save">비밀번호 바꾸고 팀 사이트에 반영</button></div>
       <p class="memo" style="color:var(--warn)">바꾸면 팀원 모두 새 비밀번호로 다시 들어와야 해요.</p>
@@ -752,6 +770,7 @@ document.addEventListener('click', async (e) => {
     case 'pw-save': {
       const a = $('#pw1').value.trim(), b2 = $('#pw2').value.trim();
       if (a.length < 4) return toast('비밀번호는 4자 이상이어야 해요');
+      if (!/^[\x21-\x7E]+$/.test(a)) return toast('영문·숫자·기호만 쓸 수 있어요 (아이폰은 비밀번호 칸에 한글 입력이 안 돼요)');
       if (a !== b2) return toast('두 비밀번호가 서로 달라요');
       if (!confirm('팀 비밀번호를 바꾸고 팀 사이트에 반영할까요?\n팀원 모두 새 비밀번호로 다시 들어와야 해요.')) return;
       const r = await adminCall('/api/password', { password: a }, el);

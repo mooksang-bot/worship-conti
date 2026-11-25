@@ -254,3 +254,5 @@ body.locked .tabs, body.locked .logout { visibility: hidden; }
 /* 앱으로 설치했을 때 (아이폰 노치 영역) */
 .topbar { padding-top: max(10px, env(safe-area-inset-top)); }
 #worship .w-hud { padding-top: max(8px, env(safe-area-inset-top)); }
+.lock .pwrow { display: flex; gap: 6px; align-items: center; }
+.lock .pwrow input { flex: 1; min-width: 0; }
