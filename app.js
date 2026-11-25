@@ -662,9 +662,11 @@ async function sendGo(btn) {
 
 /* ---------- 마스터: 인도자가 보낸 콘티 가져오기 ---------- */
 let impData = null;
-async function previewImport(file) {
-  let sub;
-  try { sub = JSON.parse(await file.text()); } catch { return toast('콘티 파일을 읽을 수 없어요'); }
+let impInboxId = null;
+async function previewImport(file, preset, inboxId) {
+  let sub = preset;
+  impInboxId = inboxId || null;
+  if (!sub) { try { sub = JSON.parse(await file.text()); } catch { return toast('콘티 파일을 읽을 수 없어요'); } }
   if (!sub || sub.type !== 'worship-conti-submission') return toast('인도자 페이지에서 만든 콘티 파일이 아니에요');
   impData = sub;
   const sl = sub.setlist;
@@ -1031,18 +1033,20 @@ function renderAdmin() {
   }
   if (!(canEdit() && serverSave)) return `<p class="empty">관리 메뉴는 인도자 컴퓨터에서만 쓸 수 있어요.<br><small>"인도자 화면 열기"로 열어 주세요.</small></p>`;
   return `<h1>마스터 관리</h1><p class="sub">마스터만 보이는 메뉴예요 · 바꾼 내용은 [저장하고 반영]을 눌러야 팀 사이트에 적용돼요</p>
+    <section class="card inbox" style="padding:16px;margin-bottom:16px">
+      <h2 style="margin-top:0">📥 받은 콘티 <small class="sub">(인도자가 저장해서 카톡으로 보낸 것)</small></h2>
+      <p class="sub" style="margin:0 0 8px">카톡에서 파일을 <b>받기(저장)</b>만 하세요. 파일을 열 필요 없어요. 다운로드·바탕화면·문서 폴더에 있으면 여기 자동으로 떠요.</p>
+      <div id="inbox"><p class="sub">찾는 중…</p></div>
+      <div id="imp-preview"></div>
+      <details style="margin-top:10px"><summary class="sub" style="cursor:pointer">다른 폴더에 있는 파일 직접 고르기</summary>
+        <input type="file" id="imp-file" accept=".json,application/json" style="margin-top:6px"></details>
+    </section>
     <section class="card" style="padding:16px">
       <h2 style="margin-top:0">예배 · 인도자 · 팀원 비밀번호</h2>
       <p class="sub" style="margin:0 0 8px">팀원은 자기 예배 비밀번호로 <b>그 예배 콘티 + 악보함</b>만 볼 수 있어요. 비밀번호를 비워 두면 그 예배는 마스터만 봐요.</p>
       <div id="svc-admin"><p class="sub">불러오는 중…</p></div>
       <div class="row" style="margin-top:14px"><button class="btn primary" data-act="svc-save">저장하고 팀 사이트에 반영</button></div>
       <p class="memo" id="svcmsg"></p>
-    </section>
-    <section class="card" style="padding:16px;margin-top:16px">
-      <h2 style="margin-top:0">📥 인도자가 보낸 콘티 가져오기</h2>
-      <p class="sub" style="margin:0 0 8px">카톡으로 받은 <b>콘티_….json</b> 파일을 골라 주세요. 미리보기를 확인하고 반영하면 팀 사이트에 올라가요.</p>
-      <input type="file" id="imp-file" accept=".json,application/json">
-      <div id="imp-preview"></div>
     </section>
     <section class="card" style="padding:16px;margin-top:16px">
       <h2 style="margin-top:0">마스터 비밀번호 <small class="sub">(모든 예배 보기)</small></h2>
@@ -1060,7 +1064,22 @@ function renderAdmin() {
     </section>`;
 }
 let adminSvc = [];
+let inboxItems = [];
+async function loadInbox() {
+  inboxItems = await fetch('/api/inbox', { cache: 'no-store' }).then((r) => r.json()).catch(() => []);
+  const box = $('#inbox');
+  if (!box) return;
+  const tab = document.querySelector('[data-tab=admin]');
+  if (tab) tab.textContent = inboxItems.length ? `관리 (${inboxItems.length})` : '관리';
+  box.innerHTML = inboxItems.length ? inboxItems.map((x, i) => {
+    const sl = x.sub.setlist || {};
+    return `<div class="inbox-item"><div><b>${esc((x.sub.from && x.sub.from.name) || '이름 없음')}</b> · ${sl.date ? fmtDate(sl.date) : ''} ${esc(svcTitle(sl.service || ''))} · ${(sl.songs || []).length}곡${(x.sub.newSongs || []).length ? ` · 새 곡 ${x.sub.newSongs.length}` : ''}
+      <div class="sub" style="margin:0;font-size:12px">${new Date(x.mtime * 1000).toLocaleString('ko-KR')} 받음</div></div>
+      <button class="btn primary" data-act="inbox-open" data-i="${i}">미리보기 · 반영</button></div>`;
+  }).join('') : '<p class="sub" style="margin:0">새로 받은 콘티가 없어요</p>';
+}
 async function loadSvcAdmin() {
+  loadInbox();
   adminSvc = await fetch('/api/services', { cache: 'no-store' }).then((r) => r.json()).catch(() => []);
   const cur = await fetch('/api/password', { cache: 'no-store' }).then((r) => r.text()).catch(() => '');
   if ($('#curpw')) $('#curpw').textContent = cur || '(없음)';
@@ -1175,12 +1194,13 @@ document.addEventListener('click', async (e) => {
     case 'new-song-save': saveNewSong(el); break;
     case 'send': openSend(); break;
     case 'send-go': sendGo(el); break;
-    case 'imp-cancel': impData = null; $('#imp-preview').innerHTML = ''; $('#imp-file').value = ''; break;
+    case 'imp-cancel': impData = null; impInboxId = null; $('#imp-preview').innerHTML = ''; $('#imp-file').value = ''; break;
+    case 'inbox-open': { const x = inboxItems[+el.dataset.i]; previewImport(null, x.sub, x.id); $('#imp-preview').scrollIntoView({ behavior: 'smooth' }); break; }
     case 'imp-go': {
       if (!impData) return;
-      const r = await adminCall('/api/import', { submission: impData, applyPassword: !!($('#imp-pw') && $('#imp-pw').checked), deploy: true }, el);
+      const r = await adminCall('/api/import', { submission: impData, applyPassword: !!($('#imp-pw') && $('#imp-pw').checked), deploy: true, inboxId: impInboxId }, el);
       $('#impmsg').textContent = r.ok ? '✅ ' + r.text : '❌ ' + r.text;
-      if (r.ok) { impData = null; await load(); }
+      if (r.ok) { impData = null; impInboxId = null; await load(); loadInbox(); }
       break;
     }
     case 'pw-show': {
@@ -1281,6 +1301,7 @@ function addAdminTab() {
   const a = document.createElement('a');
   a.href = '#/admin'; a.dataset.tab = 'admin'; a.textContent = '관리';
   document.querySelector('.tabs').appendChild(a);
+  if (serverSave) { fetch('/api/inbox').then((r) => r.json()).then((x) => { if (x.length) a.textContent = `관리 (${x.length})`; }).catch(() => {}); }
 }
 
 load().then(() => { addAdminTab(); if (entry && $('#who')) $('#who').textContent = entry.role === 'master' ? '마스터' : `${svcTitle((serviceList.find((x) => x.id === entry.sid) || {}).name)} · ${entry.role === 'leader' ? entry.name : '팀원'}`; render(); }).catch((err) => {
