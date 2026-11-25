@@ -312,3 +312,11 @@ body.locked .tabs, body.locked .logout { visibility: hidden; }
 .inbox { border: 2px solid var(--accent); }
 .inbox-item { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 0; border-top: 1px solid var(--line); }
 .inbox-item:first-child { border-top: 0; }
+
+/* 비밀번호 칸: 다크 모드에서도 항상 흰 바탕 + 검은 굵은 글씨 */
+#lockform #pw, #login, .svc-pw, .ld-pw, #pw1, #pw2 {
+  background: #ffffff !important; color: #000000 !important; -webkit-text-fill-color: #000000 !important;
+  caret-color: #000000; font-weight: 700; font-size: 18px; letter-spacing: .02em;
+  border: 2px solid #2f5d50 !important; color-scheme: light;
+}
+#lockform #pw::placeholder, #login::placeholder { color: #8a857a; -webkit-text-fill-color: #8a857a; font-weight: 400; }
