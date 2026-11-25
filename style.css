@@ -274,3 +274,22 @@ body.locked .tabs, body.locked .logout { visibility: hidden; }
 .imp ol { margin: 6px 0; padding-left: 20px; }
 .svc-card .ld input { flex: 1 1 90px; }
 #loginrow input { width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); font-size: 16px; }
+
+/* 입장 화면 (표지) */
+.cover { max-width: 460px; margin: 6vh auto 0; text-align: center; }
+.cover h1 { font-size: 26px; margin: 4px 0; }
+.cover-logo { width: 64px; height: 64px; margin: 0 auto 6px; border-radius: 18px; background: var(--accent); color: var(--surface); font-size: 36px; line-height: 64px; }
+.cover .back { float: left; }
+.cover .entries, .cover .names { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+.entry {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 84px;
+  border: 1px solid var(--line); background: var(--surface); border-radius: 14px; cursor: pointer; padding: 12px; box-shadow: var(--shadow);
+}
+.entry b { font-size: 17px; }
+.entry span { font-size: 13px; color: var(--muted); }
+.entry:active { transform: scale(.98); }
+.entry.master { width: 100%; margin-top: 14px; min-height: 56px; flex-direction: row; gap: 8px; background: var(--surface-2); }
+.entry.team { width: 100%; background: var(--accent-soft); border-color: var(--accent-soft); }
+.entry.team b { color: var(--accent); }
+.cover .lock { margin: 14px 0 0; max-width: none; text-align: left; }
+.cover .sub { margin-bottom: 0; }

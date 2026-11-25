@@ -5,7 +5,8 @@
 
 const MODE = window.SITE_MODE || 'local';
 // 편집 권한: 마스터 컴퓨터(local) 또는 팀 사이트에 '인도자'로 로그인했을 때
-const isLeader = () => MODE === 'team' && !!access && access.role === 'leader';
+// 팀 사이트에서 편집할 수 있는 사람: 인도자로 입장 또는 마스터로 입장
+const isLeader = () => MODE === 'team' && !!entry && (entry.role === 'leader' || entry.role === 'master');
 const canEdit = () => MODE !== 'team' || isLeader();
 const NEWSONG_KEY = 'worship.newsongs.v1'; // 인도자가 추가한 새 곡 (보내기 전까지 이 기기에만)
 const SENT_KEY = 'worship.sent.v1';       // 마스터에게 보낸 기록
@@ -17,7 +18,9 @@ const serviceOf = (name) => serviceList.find((x) => x.name === name || (x.aliase
 // 예배 이름으로 기본 요일 정하기 (수=3, 금=5, 주일=0)
 // 내가 편집할 수 있는 예배 (인도자는 맡은 예배만)
 const editableServices = () => (MODE !== 'team' ? services()
-  : serviceList.filter((x) => ((access && access.sids) || []).includes(x.id)).map((x) => x.name));
+  : !entry ? []
+  : entry.role === 'master' ? serviceList.filter((x) => svcKeys[x.id]).map((x) => x.name)
+  : entry.role === 'leader' ? serviceList.filter((x) => x.id === entry.sid).map((x) => x.name) : []);
 const canEditSetlist = (sl) => MODE !== 'team' || (isLeader() && editableServices().includes((serviceOf(sl.service) || {}).name));
 const serviceDow = (name) => (/수요/.test(name) ? 3 : /금요/.test(name) ? 5 : /주일/.test(name) ? 0 : 5);
 const DAYS = ['일', '월', '화', '수', '목', '금', '토'];
@@ -121,10 +124,12 @@ async function deriveKey(password, meta) {
     base, { name: 'AES-GCM', length: 256 }, true, ['decrypt']);
 }
 // 출입 열쇠로 맞는 상자를 찾아 열기
-async function tryKey(kek, meta) {
+// want: 상자가 이 입장 조건에 맞는지 (예: 금요 인도자면 role=leader 이고 금요 열쇠가 있어야 함)
+async function tryKey(kek, meta, want) {
   for (const lock of meta.locks || []) {
     try {
       const box = JSON.parse(new TextDecoder().decode(await decryptWith(kek, b64(lock))));
+      if (want && !want(box)) continue;
       libKey = await importAes(b64(box.lib));
       svcKeys = {};
       for (const [id, k] of Object.entries(box.svc || {})) svcKeys[id] = await importAes(b64(k));
@@ -134,96 +139,152 @@ async function tryKey(kek, meta) {
   }
   return false;
 }
+const ENTRY_STORE = 'worship.entry.v1';
+let entry = null; // 어디로 입장했는지 { role: 'master'|'leader'|'team', sid, name }
+const svcTitle = (name) => { const n = String(name || '').replace(/예배$/, '').trim(); return /찬양$/.test(n) ? n : `${n} 찬양`; };
+const entryOk = (box, e) => !e || (e.role === 'master' ? box.role === 'master'
+  : (box.svc || {})[e.sid] && (e.role !== 'leader' || box.role === 'leader'));
+
 async function loadTeam() {
   const meta = await fetch('meta.json', { cache: 'no-store' }).then((r) => r.json());
+  entry = readJSON(ENTRY_STORE, null);
   let saved = null;
   try { saved = localStorage.getItem(KEY_STORE); } catch {}
-  if (saved) {
+  if (saved && entry) {
     const key = await importAes(b64(saved)).catch(() => null);
-    if (!(key && (await tryKey(key, meta)))) { try { localStorage.removeItem(KEY_STORE); } catch {} }
+    if (!(key && (await tryKey(key, meta, (b) => entryOk(b, entry))))) {
+      try { localStorage.removeItem(KEY_STORE); localStorage.removeItem(ENTRY_STORE); } catch {}
+      libKey = null; entry = null;
+    }
   }
-  // 초대 링크(#k=...)로 들어온 경우: 비밀번호 없이 열고 이 기기에 기억
-  const inv = location.hash.match(/^#k=([A-Za-z0-9_-]+)/);
-  let inviteFailed = false;
+  // 초대 링크(#k=열쇠&s=예배)로 들어온 경우: 비밀번호 없이 그 예배로 입장
+  const inv = location.hash.match(/^#k=([A-Za-z0-9_-]+)(?:&s=([a-z0-9]+))?/);
+  let notice = '';
   if (inv) {
     history.replaceState(null, '', location.pathname + location.search + '#/');
     const key = await importAes(b64(b64url(inv[1]))).catch(() => null);
-    if (key && (await tryKey(key, meta))) {
+    const want = inv[2] ? { role: 'team', sid: inv[2] } : null;
+    if (key && (await tryKey(key, meta, (b) => entryOk(b, want)))) {
+      entry = want || { role: access.role, sid: access.role === 'master' ? null : access.sids[0] };
       try { localStorage.setItem(KEY_STORE, b64url(inv[1])); } catch {}
-    } else inviteFailed = true;
+      writeJSON(ENTRY_STORE, entry);
+    } else { libKey = null; notice = '초대 링크가 만료됐어요. 입장할 예배를 골라 비밀번호를 넣어 주세요'; }
   }
-  if (!libKey) await lockScreen(meta, inviteFailed);
+  if (!libKey) await entranceScreen(meta, notice);
   const get = (f) => fetch(f, { cache: 'no-store' }).then((r) => r.arrayBuffer());
   const lib = JSON.parse(new TextDecoder().decode(await decryptWith(libKey, await get('lib.bin'))));
   serviceList = lib.services || [];
   let list = [];
-  for (const [id, key] of Object.entries(svcKeys)) {
-    try { list = list.concat(JSON.parse(new TextDecoder().decode(await decryptWith(key, await get(`svc-${id}.bin`))))); } catch {}
+  const sids = entry.role === 'master' ? Object.keys(svcKeys) : [entry.sid];
+  for (const id of sids) {
+    if (!svcKeys[id]) continue;
+    try { list = list.concat(JSON.parse(new TextDecoder().decode(await decryptWith(svcKeys[id], await get(`svc-${id}.bin`))))); } catch {}
   }
-  if (access.role === 'leader') {
+  if (entry.role === 'leader' || entry.role === 'master') {
+    // 이 기기에서 작성한 콘티·새 곡 합치기 (보내기 전까지는 이 기기에만 있음)
     const ns = Object.values(readNewSongs());
     const local = readLocal();
     const map = {};
     list.forEach((x) => (map[slId(x)] = x));
-    Object.entries(local.edited).forEach(([id, x]) => (map[id] = x));
+    Object.entries(local.edited).forEach(([id, x]) => { if (canEditSetlist(x)) map[id] = x; });
     local.deleted.forEach((id) => delete map[id]);
     setData(lib.songs.concat(ns), Object.values(map));
   } else setData(lib.songs, list);
 }
 const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-function lockScreen(meta, inviteFailed) {
+
+/* ---------- 입장 화면 (표지) ----------
+   [수요 찬양 입장] [금요 찬양 입장] … [마스터 입장]
+   예배를 고르면 → 인도자 이름 버튼들 + [팀원으로 입장] → 비밀번호 */
+function entranceScreen(meta, notice) {
   document.body.classList.add('locked');
-  $('#app').innerHTML = `<div class="card lock"><h1>찬양팀 콘티</h1>
-    <p class="sub">${inviteFailed ? '초대 링크가 만료됐어요. 예배 비밀번호를 입력해 주세요' : '예배 비밀번호를 입력해 주세요'}</p>
-    <form id="lockform">
-      <div id="loginrow" hidden style="margin-bottom:8px"><input id="login" type="text" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="인도자 아이디"></div>
-      <div class="pwrow"><input id="pw" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="비밀번호 또는 초대 링크 붙여넣기" autofocus>
-        <button type="button" class="btn small" id="pwtoggle">보기</button></div>
-      <label class="row" style="gap:6px;margin-top:10px;font-size:14px"><input type="checkbox" id="remember" checked>이 기기에서 기억하기</label>
-      <button class="btn primary" style="width:100%;justify-content:center;margin-top:14px">열기</button>
-      <p style="text-align:center;margin:12px 0 0;font-size:14px"><a href="#" id="leaderlink">인도자 로그인</a></p>
-      ${standalone() ? '<p class="sub" style="margin:10px 0 0;font-size:13px">📱 홈 화면 앱은 처음 한 번 비밀번호나 초대 링크를 넣어야 해요. 카톡의 초대 링크를 길게 눌러 복사한 뒤 위 칸에 붙여넣어도 돼요.</p>' : ''}
-      <p id="pwmsg" class="sub" style="margin:10px 0 0;color:var(--warn)"></p></form></div>`;
-  $('#leaderlink').addEventListener('click', (e) => {
-    e.preventDefault();
-    const on = $('#loginrow').hidden;
-    $('#loginrow').hidden = !on;
-    $('#leaderlink').textContent = on ? '팀원으로 보기 (예배 비밀번호)' : '인도자 로그인';
-    $('#pw').placeholder = on ? '인도자 비밀번호' : '비밀번호 또는 초대 링크 붙여넣기';
-    (on ? $('#login') : $('#pw')).focus();
-  });
-  $('#pwtoggle').addEventListener('click', () => {
-    const i = $('#pw'); const show = i.type === 'password';
-    i.type = show ? 'text' : 'password'; $('#pwtoggle').textContent = show ? '숨기기' : '보기'; i.focus();
-  });
+  const ents = meta.entrance || [];
   return new Promise((resolve) => {
-    $('#lockform').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      $('#pwmsg').textContent = '확인 중…';
-      const val = $('#pw').value.trim().normalize('NFC');
-      // 초대 링크(또는 열쇠)를 붙여넣은 경우
-      const inv = val.match(/#k=([A-Za-z0-9_-]{40,})/) || val.match(/^([A-Za-z0-9_-]{43})$/);
-      let key = null;
-      if (inv) {
-        const raw = inv[1].replace(/-/g, '+').replace(/_/g, '/');
-        key = await crypto.subtle.importKey('raw', b64(raw + '==='.slice((raw.length + 3) % 4)), 'AES-GCM', true, ['decrypt']).catch(() => null);
-        if (!(key && (await tryKey(key, meta)))) { $('#pwmsg').textContent = '초대 링크가 만료됐어요. 인도자에게 새 링크를 받아 주세요'; return; }
-      } else {
-        const login = $('#loginrow').hidden ? '' : $('#login').value.trim().toLowerCase();
-        key = await deriveKey(login ? `${login}\n${val}` : val, meta);
-        if (!(await tryKey(key, meta))) { $('#pwmsg').textContent = login ? '아이디 또는 비밀번호가 맞지 않아요' : '비밀번호가 맞지 않아요'; return; }
-      }
-      if ($('#remember').checked) {
-        const raw = new Uint8Array(await crypto.subtle.exportKey('raw', key));
-        try { localStorage.setItem(KEY_STORE, btoa(String.fromCharCode(...raw))); } catch {}
-      }
-      document.body.classList.remove('locked');
-      resolve();
-    });
+    const cover = () => {
+      $('#app').innerHTML = `<div class="cover">
+        <div class="cover-logo">♪</div>
+        <h1>찬양팀 콘티</h1>
+        <p class="sub">${esc(notice || '입장할 곳을 골라 주세요')}</p>
+        <div class="entries">
+          ${ents.map((e) => `<button class="entry" data-enter="${esc(e.id)}"><b>${esc(svcTitle(e.name))}</b><span>입장</span></button>`).join('')}
+        </div>
+        <button class="entry master" data-enter="master"><b>🔑 마스터</b><span>입장</span></button>
+        ${standalone() ? '<p class="sub" style="font-size:13px;margin-top:14px">📱 홈 화면 앱은 처음 한 번 비밀번호를 넣어 주세요.</p>' : ''}
+      </div>`;
+      document.querySelectorAll('[data-enter]').forEach((b) => b.addEventListener('click', () => {
+        const id = b.dataset.enter;
+        if (id === 'master') return pwForm({ title: '🔑 마스터 입장', label: '마스터 비밀번호', entry: { role: 'master', sid: null } });
+        service(ents.find((e) => e.id === id));
+      }));
+    };
+    const service = (e) => {
+      const t = svcTitle(e.name);
+      $('#app').innerHTML = `<div class="cover">
+        <button class="btn small back" data-back>← 처음으로</button>
+        <h1>${esc(t)}</h1>
+        ${e.leaders.length ? `<p class="sub">인도자</p>
+          <div class="names">${e.leaders.map((l, i) => `<button class="entry name" data-li="${i}"><b>${esc(l.name)}</b><span>인도자 입장</span></button>`).join('')}</div>` : ''}
+        ${e.team ? `<p class="sub" style="margin-top:18px">팀원</p>
+          <button class="entry team" data-team><b>🎵 팀원으로 입장</b><span>콘티 · 악보 보기</span></button>` : ''}
+        ${!e.leaders.length && !e.team ? '<p class="sub">아직 열려 있지 않아요. 마스터에게 문의해 주세요.</p>' : ''}
+      </div>`;
+      $('[data-back]').addEventListener('click', cover);
+      document.querySelectorAll('[data-li]').forEach((b) => b.addEventListener('click', () => {
+        const l = e.leaders[+b.dataset.li];
+        pwForm({ title: `${t} · ${l.name}`, label: `${l.name} 님 비밀번호`, login: l.login,
+          entry: { role: 'leader', sid: e.id, name: l.name }, back: () => service(e) });
+      }));
+      const tb = $('[data-team]');
+      if (tb) tb.addEventListener('click', () => pwForm({ title: `${t} · 팀원`, label: '팀원 비밀번호 (또는 초대 링크 붙여넣기)',
+        entry: { role: 'team', sid: e.id }, allowInvite: true, back: () => service(e) }));
+    };
+    const pwForm = (o) => {
+      $('#app').innerHTML = `<div class="cover">
+        <button class="btn small back" data-back>← 뒤로</button>
+        <h1>${esc(o.title)}</h1>
+        <form id="lockform" class="card lock" style="margin-top:14px">
+          <label class="sub" for="pw" style="display:block;margin:0 0 6px">${esc(o.label)}</label>
+          <div class="pwrow"><input id="pw" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" autofocus>
+            <button type="button" class="btn small" id="pwtoggle">보기</button></div>
+          <label class="row" style="gap:6px;margin-top:10px;font-size:14px"><input type="checkbox" id="remember" checked>이 기기에서 기억하기</label>
+          <button class="btn primary" style="width:100%;justify-content:center;margin-top:14px">입장</button>
+          <p id="pwmsg" class="sub" style="margin:10px 0 0;color:var(--warn)"></p>
+        </form></div>`;
+      $('[data-back]').addEventListener('click', o.back || cover);
+      $('#pwtoggle').addEventListener('click', () => {
+        const i = $('#pw'); const show = i.type === 'password';
+        i.type = show ? 'text' : 'password'; $('#pwtoggle').textContent = show ? '숨기기' : '보기'; i.focus();
+      });
+      $('#lockform').addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        $('#pwmsg').textContent = '확인 중…';
+        const val = $('#pw').value.trim().normalize('NFC');
+        const want = (b) => entryOk(b, o.entry);
+        const inv = o.allowInvite && (val.match(/#k=([A-Za-z0-9_-]{40,})/) || val.match(/^([A-Za-z0-9_-]{43})$/));
+        let key;
+        if (inv) key = await importAes(b64(b64url(inv[1]))).catch(() => null);
+        else key = await deriveKey(o.login ? `${o.login}\n${val}` : val, meta);
+        if (!(key && (await tryKey(key, meta, want)))) {
+          libKey = null;
+          $('#pwmsg').textContent = inv ? '초대 링크가 만료됐어요' : '비밀번호가 맞지 않아요';
+          return;
+        }
+        entry = o.entry;
+        if ($('#remember').checked) {
+          const raw = new Uint8Array(await crypto.subtle.exportKey('raw', key));
+          try { localStorage.setItem(KEY_STORE, btoa(String.fromCharCode(...raw))); } catch {}
+          writeJSON(ENTRY_STORE, entry);
+        }
+        document.body.classList.remove('locked');
+        resolve();
+      });
+    };
+    cover();
   });
 }
 function logout() {
-  try { localStorage.removeItem(KEY_STORE); } catch {}
+  try { localStorage.removeItem(KEY_STORE); localStorage.removeItem(ENTRY_STORE); } catch {}
+  location.hash = '#/';
   location.reload();
 }
 
@@ -509,7 +570,7 @@ function openSend() {
   const newCount = sl.songs.filter((it) => (songMap[it.songId] || {})._new).length;
   openModal(`<h1>📤 마스터에게 보내기</h1>
     <p class="sub">${fmtDate(sl.date)} ${esc(sl.service)} · 곡 ${sl.songs.length}개${newCount ? ` · 새 곡 ${newCount}개(악보 포함)` : ''}</p>
-    ${(access.people || []).length > 1 ? `<div class="field"><label>보내는 사람</label><select id="sd-who">${access.people.map((n) => `<option ${n === readJSON('worship.me.v1', '') ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></div>` : ''}
+    ${!entry.name && entry.role !== 'master' && (access.people || []).length > 1 ? `<div class="field"><label>보내는 사람</label><select id="sd-who">${access.people.map((n) => `<option ${n === readJSON('worship.me.v1', '') ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></div>` : ''}
     <div class="field"><label>마스터에게 남길 말 (선택)</label><textarea id="sd-msg" rows="2" placeholder="예: 3번 곡 키를 한 키 올렸어요"></textarea></div>
     <div class="field"><label>${esc(sl.service)} 팀원 비밀번호 바꾸기 요청 (선택 · 영문·숫자 4자 이상)</label><input id="sd-pw" autocapitalize="off" autocorrect="off"></div>
     <div class="row" style="margin-top:14px"><span class="spacer"></span><button class="btn primary" data-act="send-go">보내기 파일 만들기</button></div>
@@ -528,7 +589,7 @@ async function sendGo(btn) {
     for (const f of s.versions[0].files) { const b = await idbGet(f.slice(4)); if (b) files.push(await blobToDataURL(b)); }
     newSongs.push({ tempId: id, title: s.title, key: s.versions[0].key, youtube: s.youtube, flow: s.flow, files });
   }
-  const who = $('#sd-who') ? $('#sd-who').value : access.name || '';
+  const who = entry.name || (entry.role === 'master' ? '마스터' : $('#sd-who') ? $('#sd-who').value : access.name || '');
   if ($('#sd-who')) writeJSON('worship.me.v1', who);
   const sub = { type: 'worship-conti-submission', v: 1, createdAt: new Date().toISOString(),
     from: { name: who, login: access.login || '' }, service: sl.service, setlist: sl, newSongs,
@@ -887,6 +948,16 @@ function renderHistory() {
 
 /* ---------- 화면: 관리 (인도자 컴퓨터에서만) ---------- */
 function renderAdmin() {
+  if (MODE === 'team' && entry && entry.role === 'master') {
+    return `<h1>마스터 관리</h1><p class="sub">예배 · 인도자 · 비밀번호 저장과 팀 사이트 반영은 <b>마스터 컴퓨터</b>에서 해요</p>
+      <section class="card" style="padding:16px">
+        <a class="btn primary" href="http://localhost:8765/web/#/admin" target="_blank" rel="noopener">🖥 마스터 관리 열기 (마스터 컴퓨터에서만)</a>
+        <p class="memo">다른 기기에서는 열리지 않아요. 이 화면에서는 모든 예배 콘티를 보고, 콘티를 써서 '마스터에게 보내기'로 컴퓨터에 넘길 수 있어요.</p>
+      </section>
+      <section class="card" style="padding:16px;margin-top:16px"><h2 style="margin-top:0">예배 · 인도자</h2>
+        ${serviceList.map((x) => `<p><b>${esc(svcTitle(x.name))}</b> · ${(x.leaders || []).map((l) => esc(l.name)).join(', ') || '인도자 없음'}</p>`).join('')}
+      </section>`;
+  }
   if (!(canEdit() && serverSave)) return `<p class="empty">관리 메뉴는 인도자 컴퓨터에서만 쓸 수 있어요.<br><small>"인도자 화면 열기"로 열어 주세요.</small></p>`;
   return `<h1>마스터 관리</h1><p class="sub">마스터만 보이는 메뉴예요 · 바꾼 내용은 [저장하고 반영]을 눌러야 팀 사이트에 적용돼요</p>
     <section class="card" style="padding:16px">
@@ -1104,7 +1175,7 @@ document.addEventListener('change', (e) => {
 
 if (MODE === 'team') {
   const b = document.createElement('button');
-  b.className = 'btn small logout'; b.textContent = '잠그기'; b.title = '이 기기에서 비밀번호 지우기';
+  b.className = 'btn small logout'; b.textContent = '나가기'; b.title = '입장 화면으로 (이 기기에서 비밀번호 지우기)';
   b.addEventListener('click', logout);
   const who = document.createElement('span');
   who.className = 'who'; who.id = 'who';
@@ -1115,12 +1186,13 @@ if (MODE === 'team') {
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
 function addAdminTab() {
-  if (!(canEdit() && serverSave) || document.querySelector('[data-tab=admin]')) return;
+  const webMaster = MODE === 'team' && entry && entry.role === 'master';
+  if (!((canEdit() && serverSave) || webMaster) || document.querySelector('[data-tab=admin]')) return;
   const a = document.createElement('a');
   a.href = '#/admin'; a.dataset.tab = 'admin'; a.textContent = '관리';
   document.querySelector('.tabs').appendChild(a);
 }
 
-load().then(() => { addAdminTab(); if (access && $('#who')) $('#who').textContent = access.role === 'master' ? '마스터' : access.label; render(); }).catch((err) => {
+load().then(() => { addAdminTab(); if (entry && $('#who')) $('#who').textContent = entry.role === 'master' ? '마스터' : `${svcTitle((serviceList.find((x) => x.id === entry.sid) || {}).name)} · ${entry.role === 'leader' ? entry.name : '팀원'}`; render(); }).catch((err) => {
   $('#app').innerHTML = `<p class="empty">데이터를 불러오지 못했어요.<br><small>${esc(err.message)}</small></p>`;
 });
