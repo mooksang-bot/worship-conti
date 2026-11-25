@@ -108,15 +108,26 @@ async function loadTeam() {
     const key = await crypto.subtle.importKey('raw', b64(saved), 'AES-GCM', true, ['decrypt']).catch(() => null);
     if (!(key && (await tryKey(key, meta)))) { try { localStorage.removeItem(KEY_STORE); } catch {} }
   }
-  if (!teamKey) await lockScreen(meta);
+  // 초대 링크(#k=...)로 들어온 경우: 비밀번호 없이 열고 이 기기에 기억
+  const inv = location.hash.match(/^#k=([A-Za-z0-9_-]+)/);
+  let inviteFailed = false;
+  if (inv) {
+    history.replaceState(null, '', location.pathname + location.search + '#/');
+    const raw = inv[1].replace(/-/g, '+').replace(/_/g, '/');
+    const key = await crypto.subtle.importKey('raw', b64(raw + '==='.slice((raw.length + 3) % 4)), 'AES-GCM', true, ['decrypt']).catch(() => null);
+    if (key && (await tryKey(key, meta))) {
+      try { localStorage.setItem(KEY_STORE, inv[1].replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((raw.length + 3) % 4)); } catch {}
+    } else inviteFailed = true;
+  }
+  if (!teamKey) await lockScreen(meta, inviteFailed);
   const buf = await fetch('data.bin', { cache: 'no-store' }).then((r) => r.arrayBuffer());
   const data = JSON.parse(new TextDecoder().decode(await decryptBuf(buf)));
   setData(data.songs, data.setlists);
 }
-function lockScreen(meta) {
+function lockScreen(meta, inviteFailed) {
   document.body.classList.add('locked');
   $('#app').innerHTML = `<div class="card lock"><h1>찬양팀 콘티</h1>
-    <p class="sub">팀 비밀번호를 입력해 주세요</p>
+    <p class="sub">${inviteFailed ? '초대 링크가 만료됐어요. 팀 비밀번호를 입력해 주세요' : '팀 비밀번호를 입력해 주세요'}</p>
     <form id="lockform"><input id="pw" type="password" autocomplete="current-password" placeholder="비밀번호" autofocus>
       <label class="row" style="gap:6px;margin-top:10px;font-size:14px"><input type="checkbox" id="remember" checked>이 기기에서 기억하기</label>
       <button class="btn primary" style="width:100%;justify-content:center;margin-top:14px">열기</button>
@@ -665,6 +676,13 @@ function renderAdmin() {
       <p class="memo" style="color:var(--warn)">바꾸면 팀원 모두 새 비밀번호로 다시 들어와야 해요.</p>
     </section>
     <section class="card" style="padding:16px;margin-top:16px">
+      <h2 style="margin-top:0">초대 링크 (카톡용)</h2>
+      <p class="sub" style="margin:0 0 8px">팀원이 누르기만 하면 비밀번호 없이 열려요. 팀 단톡방에만 올려 주세요.</p>
+      <div class="row"><button class="btn primary" data-act="invite-copy">카톡 공지 + 초대 링크 복사</button>
+        <button class="btn" data-act="invite-link">링크만 복사</button></div>
+      <p class="memo">링크가 다른 곳에 퍼졌다면 위에서 비밀번호를 바꾸세요. 예전 초대 링크는 바로 막혀요.</p>
+    </section>
+    <section class="card" style="padding:16px;margin-top:16px">
       <h2 style="margin-top:0">팀 사이트에 반영</h2>
       <p class="sub" style="margin:0 0 8px">콘티를 편집한 뒤 누르면 팀원 사이트가 업데이트돼요 (1~2분).</p>
       <button class="btn primary" data-act="deploy">지금 반영하기</button>
@@ -739,6 +757,16 @@ document.addEventListener('click', async (e) => {
       const r = await adminCall('/api/password', { password: a }, el);
       if (r.ok) { $('#pw1').value = $('#pw2').value = ''; $('#curpw').textContent = '••••••'; toast('비밀번호를 바꿨어요. 1~2분 뒤 팀 사이트에 적용돼요'); }
       else toast('실패: ' + r.text);
+      break;
+    }
+    case 'invite-copy':
+    case 'invite-link': {
+      const r = await fetch('/api/invite').then(async (x) => ({ ok: x.ok, text: await x.text() })).catch(() => ({ ok: false, text: '연결 실패' }));
+      if (!r.ok) return toast(r.text);
+      const text = act === 'invite-link' ? r.text
+        : `🎵 찬양팀 콘티 사이트\n이번 주 콘티 · 악보 · 유튜브를 한곳에서 볼 수 있어요.\n아래 링크를 누르면 바로 열려요 (비밀번호 필요 없음)\n${r.text}\n\n📱 홈 화면에 추가하면 앱처럼 쓸 수 있어요\n⚠ 팀원 외에는 공유하지 말아 주세요`;
+      try { await navigator.clipboard.writeText(text); toast('복사했어요. 카톡 단톡방에 붙여넣으세요'); }
+      catch { openModal(`<h1>초대 링크</h1><textarea style="width:100%;height:220px">${esc(text)}</textarea>`); }
       break;
     }
     case 'deploy': {
