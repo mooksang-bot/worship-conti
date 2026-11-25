@@ -560,7 +560,7 @@ async function saveNewSong(btn) {
     songs.push(song); songMap[id] = song;
   }
   closeModal(); render();
-  toast(MODE === 'team' ? '새 곡을 추가했어요. 콘티에 넣고 마스터에게 보내 주세요' : '악보함에 추가했어요 (팀 사이트 반영은 관리에서)');
+  toast(MODE === 'team' ? '새 곡을 추가했어요. 콘티에 넣고 저장하기를 눌러 주세요' : '악보함에 추가했어요 (팀 사이트 반영은 관리에서)');
   if (id) openSong(id);
 }
 
@@ -568,13 +568,13 @@ async function saveNewSong(btn) {
 function openSend() {
   const sl = currentSetlist();
   const newCount = sl.songs.filter((it) => (songMap[it.songId] || {})._new).length;
-  openModal(`<h1>📤 마스터에게 보내기</h1>
+  openModal(`<h1>💾 저장하기</h1>
     <p class="sub">${fmtDate(sl.date)} ${esc(sl.service)} · 곡 ${sl.songs.length}개${newCount ? ` · 새 곡 ${newCount}개(악보 포함)` : ''}</p>
     ${!entry.name && entry.role !== 'master' && (access.people || []).length > 1 ? `<div class="field"><label>보내는 사람</label><select id="sd-who">${access.people.map((n) => `<option ${n === readJSON('worship.me.v1', '') ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></div>` : ''}
     <div class="field"><label>마스터에게 남길 말 (선택)</label><textarea id="sd-msg" rows="2" placeholder="예: 3번 곡 키를 한 키 올렸어요"></textarea></div>
     <div class="field"><label>${esc(sl.service)} 팀원 비밀번호 바꾸기 요청 (선택 · 영문·숫자 4자 이상)</label><input id="sd-pw" autocapitalize="off" autocorrect="off"></div>
-    <div class="row" style="margin-top:14px"><span class="spacer"></span><button class="btn primary" data-act="send-go">보내기 파일 만들기</button></div>
-    <p class="memo">📱 휴대폰: 공유 창이 열리면 <b>카카오톡</b> → 마스터를 골라 보내세요.<br>💻 컴퓨터: 파일이 저장돼요. 카톡으로 마스터에게 보내 주세요.</p>`, true);
+    <div class="row" style="margin-top:14px"><span class="spacer"></span><button class="btn primary" data-act="send-go">💾 저장하기</button></div>
+    <p class="memo">저장하면 <b>콘티 파일</b>이 만들어져요. 마스터가 반영하면 팀원에게 보여요.<br>📱 휴대폰: 공유 창이 열리면 <b>카카오톡</b> → 마스터에게 보내 주세요.<br>💻 컴퓨터: 파일이 내려받아져요. 카톡으로 마스터에게 보내 주세요.</p>`, true);
 }
 async function sendGo(btn) {
   const sl = structuredClone(currentSetlist());
@@ -602,12 +602,12 @@ async function sendGo(btn) {
     writeJSON(SENT_KEY, sent); closeModal(); render(); toast(how);
   };
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], title: name }); return done('보냈어요. 마스터가 반영하면 팀 사이트에 올라가요'); }
-    catch (e) { if (e.name === 'AbortError') { btn.disabled = false; btn.textContent = '보내기 파일 만들기'; return; } }
+    try { await navigator.share({ files: [file], title: name }); return done('저장했어요. 마스터가 반영하면 팀 사이트에 올라가요'); }
+    catch (e) { if (e.name === 'AbortError') { btn.disabled = false; btn.textContent = '💾 저장하기'; return; } }
   }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(file); a.download = name; document.body.appendChild(a); a.click(); a.remove();
-  done('파일을 저장했어요. 카톡으로 마스터에게 보내 주세요');
+  done('저장했어요. 내려받은 파일을 카톡으로 마스터에게 보내 주세요');
 }
 
 /* ---------- 마스터: 인도자가 보낸 콘티 가져오기 ---------- */
@@ -744,12 +744,33 @@ function setlistCard(x) {
     ${titles ? `<ol>${titles}</ol>` : `<p class="sub" style="margin:8px 0 0">아직 곡이 없어요</p>`}</a>`;
 }
 
+function writeBox() {
+  // 인도자 창 맨 위: 콘티 작성하기 상자
+  const svcs = editableServices();
+  if (!svcs.length) return '';
+  const svc = svcs[0];
+  const drafts = setlists.filter((x) => readLocal().edited[slId(x)] && svcs.includes(x.service)).sort((a, b) => a.date.localeCompare(b.date));
+  return `<section class="card writebox">
+      <h2>✏️ 콘티 작성하기</h2>
+      <p class="sub" style="margin:0 0 10px">${entry && entry.name ? `${esc(entry.name)} 님, ` : ''}날짜를 고르고 작성을 시작하세요</p>
+      <div class="row">
+        ${svcs.length > 1 ? `<select id="wb-svc">${svcs.map((x) => `<option>${esc(x)}</option>`).join('')}</select>` : `<span class="badge">${esc(svcTitle(svc))}</span>`}
+        <input type="date" id="wb-date" value="${nextDay(serviceDow(svc))}">
+        <button class="btn primary" data-act="wb-start">작성 시작</button>
+      </div>
+      ${drafts.length ? `<div class="wb-drafts"><p class="sub" style="margin:10px 0 4px">작성 중인 콘티</p>
+        ${drafts.map((x) => `<a class="btn small" href="#/setlist/${encodeURIComponent(slId(x))}">${fmtDate(x.date)} · ${x.songs.length}곡${readJSON(SENT_KEY, {})[slId(x)] ? ' · 저장함' : ''}</a>`).join(' ')}</div>` : ''}
+      <p class="memo">순서: 작성 시작 → 악보함에서 곡 추가 (새 악보·유튜브도 올리기) → 💾 저장하기</p>
+    </section>`;
+}
 function renderHome() {
   const today = todayStr();
   const upcoming = setlists.filter((x) => x.date >= today).sort((a, b) => a.date.localeCompare(b.date));
   const past = setlists.filter((x) => x.date < today).slice(0, 4);
-  return `<div class="row"><div><h1>콘티</h1><p class="sub">금요 찬양 · 주일 오전 찬양</p></div>
-      <span class="spacer"></span>${canEdit() ? '<button class="btn primary" data-act="new-setlist">＋ 새 콘티</button>' : ''}</div>
+  const sub = MODE === 'team' && entry && entry.sid ? svcTitle((serviceList.find((x) => x.id === entry.sid) || {}).name) : '수요 · 금요 · 주일 오전 · 주일 오후';
+  return `${isLeader() ? writeBox() : ''}
+    <div class="row"><div><h1>콘티</h1><p class="sub">${esc(sub)}</p></div>
+      <span class="spacer"></span>${canEdit() && !isLeader() ? '<button class="btn primary" data-act="new-setlist">＋ 새 콘티</button>' : ''}</div>
     <h2>다가오는 예배</h2>
     ${upcoming.length ? `<div class="setlist-cards">${upcoming.map(setlistCard).join('')}</div>`
       : `<div class="card empty">예정된 콘티가 없어요.${canEdit() ? '<br>악보함에서 곡을 골라 "콘티에 추가"를 눌러 보세요.' : '<br>인도자가 콘티를 올리면 여기에 보여요.'}</div>`}
@@ -869,9 +890,9 @@ function renderSetlist(id) {
       ${sl.songs.length ? '<button class="btn primary" data-act="worship">▶ 예배 모드</button>' : ''}
       <button class="btn" data-act="copy">카톡용 복사</button>
       ${canEditSetlist(sl) ? `<button class="btn ${ed ? 'primary' : ''}" data-act="edit">${ed ? '편집 완료' : '편집'}</button>` : ''}
-      ${isLeader() && canEditSetlist(sl) ? '<button class="btn primary" data-act="send">📤 마스터에게 보내기</button>' : ''}
+      ${isLeader() && canEditSetlist(sl) ? '<button class="btn primary" data-act="send">💾 저장하기</button>' : ''}
     </div>
-    ${isLeader() && readLocal().edited[slId(sl)] ? `<div class="draftline">✏️ 이 기기에서 작성한 콘티예요 · ${readJSON(SENT_KEY, {})[slId(sl)] ? `${esc(readJSON(SENT_KEY, {})[slId(sl)])}에 마스터에게 보냄` : '아직 마스터에게 보내지 않았어요'}</div>` : ''}
+    ${isLeader() && readLocal().edited[slId(sl)] ? `<div class="draftline">✏️ 이 기기에서 작성한 콘티예요 · ${readJSON(SENT_KEY, {})[slId(sl)] ? `${esc(readJSON(SENT_KEY, {})[slId(sl)])}에 저장함 (마스터 반영 전)` : '아직 저장하지 않았어요 · 다 쓰면 💾 저장하기'}</div>` : ''}
     ${sl.songs.length ? `<div class="flowline">${keyLine}</div>` : ''}
     ${ed ? `<div class="field" style="margin-bottom:16px"><label>콘티 메모</label>
       <textarea id="sl-memo" rows="2" placeholder="예: 금요일 오후 7:50 모임">${esc(sl.memo || '')}</textarea></div>` : (sl.memo ? `<p class="memo" style="margin:-8px 0 16px">${esc(sl.memo)}</p>` : '')}
@@ -952,7 +973,7 @@ function renderAdmin() {
     return `<h1>마스터 관리</h1><p class="sub">예배 · 인도자 · 비밀번호 저장과 팀 사이트 반영은 <b>마스터 컴퓨터</b>에서 해요</p>
       <section class="card" style="padding:16px">
         <a class="btn primary" href="http://localhost:8765/web/#/admin" target="_blank" rel="noopener">🖥 마스터 관리 열기 (마스터 컴퓨터에서만)</a>
-        <p class="memo">다른 기기에서는 열리지 않아요. 이 화면에서는 모든 예배 콘티를 보고, 콘티를 써서 '마스터에게 보내기'로 컴퓨터에 넘길 수 있어요.</p>
+        <p class="memo">다른 기기에서는 열리지 않아요. 이 화면에서는 모든 예배 콘티를 보고, 콘티를 써서 '저장하기'로 컴퓨터에 넘길 수 있어요.</p>
       </section>
       <section class="card" style="padding:16px;margin-top:16px"><h2 style="margin-top:0">예배 · 인도자</h2>
         ${serviceList.map((x) => `<p><b>${esc(svcTitle(x.name))}</b> · ${(x.leaders || []).map((l) => esc(l.name)).join(', ') || '인도자 없음'}</p>`).join('')}
@@ -1082,6 +1103,18 @@ document.addEventListener('click', async (e) => {
     case 'rm': mutate((sl) => sl.songs.splice(+i, 1)); break;
     case 'worship': openWorship(currentSetlist()); break;
     case 'new-song': openNewSong(); break;
+    case 'wb-start': {
+      const date = $('#wb-date').value;
+      const service = $('#wb-svc') ? $('#wb-svc').value : editableServices()[0];
+      if (!date) return toast('날짜를 골라 주세요');
+      const sid = `${date}_${service}`;
+      if (!setlists.find((x) => slId(x) === sid)) saveSetlist({ date, service, songs: [], memo: '' });
+      else if (!readLocal().edited[sid]) saveSetlist(structuredClone(setlists.find((x) => slId(x) === sid)));
+      ui.editing = true;
+      location.hash = `#/setlist/${encodeURIComponent(sid)}`;
+      setTimeout(() => { ui.editing = true; render(); });
+      break;
+    }
     case 'new-song-save': saveNewSong(el); break;
     case 'send': openSend(); break;
     case 'send-go': sendGo(el); break;

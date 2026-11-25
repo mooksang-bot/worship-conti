@@ -293,3 +293,7 @@ body.locked .tabs, body.locked .logout { visibility: hidden; }
 .entry.team b { color: var(--accent); }
 .cover .lock { margin: 14px 0 0; max-width: none; text-align: left; }
 .cover .sub { margin-bottom: 0; }
+.writebox { padding: 16px; margin-bottom: 22px; border: 2px solid var(--accent); }
+.writebox h2 { margin: 0 0 2px; font-size: 19px; }
+.writebox input[type=date], .writebox select { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 7px 10px; font-size: 15px; }
+.wb-drafts .btn { margin: 2px 4px 2px 0; }
