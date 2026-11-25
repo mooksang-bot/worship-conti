@@ -213,7 +213,7 @@ function entranceScreen(meta, notice) {
       </div>`;
       document.querySelectorAll('[data-enter]').forEach((b) => b.addEventListener('click', () => {
         const id = b.dataset.enter;
-        if (id === 'master') return pwForm({ title: '🔑 마스터 입장', label: '마스터 비밀번호', entry: { role: 'master', sid: null } });
+        if (id === 'master') return pwForm({ title: '🔑 마스터 입장', label: '마스터 비밀번호', entry: { role: 'master', sid: null }, visible: true });
         service(ents.find((e) => e.id === id));
       }));
     };
@@ -244,8 +244,8 @@ function entranceScreen(meta, notice) {
         <h1>${esc(o.title)}</h1>
         <form id="lockform" class="card lock" style="margin-top:14px">
           <label class="sub" for="pw" style="display:block;margin:0 0 6px">${esc(o.label)}</label>
-          <div class="pwrow"><input id="pw" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" autofocus>
-            <button type="button" class="btn small" id="pwtoggle">보기</button></div>
+          <div class="pwrow"><input id="pw" type="${o.visible ? 'text' : 'password'}" autocomplete="${o.visible ? 'off' : 'current-password'}" autocapitalize="off" autocorrect="off" spellcheck="false" autofocus>
+            <button type="button" class="btn small" id="pwtoggle">${o.visible ? '숨기기' : '보기'}</button></div>
           <label class="row" style="gap:6px;margin-top:10px;font-size:14px"><input type="checkbox" id="remember" checked>이 기기에서 기억하기</label>
           <button class="btn primary" style="width:100%;justify-content:center;margin-top:14px">입장</button>
           <p id="pwmsg" class="sub" style="margin:10px 0 0;color:var(--warn)"></p>
