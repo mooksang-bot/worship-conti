@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta name="robots" content="noindex, nofollow">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>찬양팀 콘티</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">찬양팀 콘티</a>
+    <nav class="tabs">
+      <a href="#/" data-tab="home">콘티</a>
+      <a href="#/library" data-tab="library">악보함</a>
+      <a href="#/history" data-tab="history">기록</a>
+    </nav>
+  </header>
+  <main id="app"><p class="empty">불러오는 중…</p></main>
+  <div id="modal" class="modal" hidden></div>
+  <div id="toast" class="toast" hidden></div>
+  <script>window.SITE_MODE = "team";</script>
+  <script src="app.js"></script>
+</body>
+</html>
