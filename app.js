@@ -385,7 +385,7 @@ function renderLibrary() {
         ${[['title', '제목순'], ['most', '많이 부른 순'], ['oldest', '오래 안 부른 순']].map(([v, t]) => `<option value="${v}" ${ui.sort === v ? 'selected' : ''}>${t}</option>`).join('')}
       </select></div>
     <div class="keytabs">
-      <button data-act="key" data-key="전체" class="${ui.key === '전체' ? 'on' : ''}">전체<span class="n">${songs.length}</span></button>
+      <button data-act="key" data-key="전체" class="${ui.key === '전체' ? 'on' : ''}">전체<span class="n">${songs.filter(hasScore).length}</span></button>
       ${keys.map((k) => `<button data-act="key" data-key="${esc(k)}" class="${ui.key === k ? 'on' : ''}">${esc(k)}<span class="n">${count[k]}</span></button>`).join('')}
     </div>
     <div class="song-grid" id="grid">${renderGrid()}</div>`;
@@ -404,10 +404,11 @@ function renderGrid() {
     if (q && !s.title.replace(/\s/g, '').includes(q)) return;
     let vs = s.versions;
     if (ui.key === '악보 없음') vs = vs.filter((v) => !v.files.length);
-    else if (ui.key !== '전체') vs = vs.filter((v) => v.files.length && (v.key || '?') === ui.key);
+    else if (ui.key === '전체' && !q) vs = vs.filter((v) => v.files.length);
+    else vs = vs.filter((v) => v.files.length && (v.key || '?') === ui.key);
     if (!vs.length) return;
     const v = vs[0];
-    const keys = (ui.key === '전체' ? s.versions : vs).map((x) => keyBadge(x.key)).join('');
+    const keys = (ui.key === '전체' ? s.versions.filter((x) => x.files.length || !hasScore(s)) : vs).map((x) => keyBadge(x.key)).join('');
     const u = stat[s.id];
     const last = u[0] ? daysBetween(u[0].date, today) : null;
     const usedTag = u.length
