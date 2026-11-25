@@ -465,7 +465,53 @@ function openSong(songId, key) {
       : `<div class="noscore">아직 악보 파일이 없어요</div>`}`);
 }
 
+/* ---------- 인도자: 작성 중인 콘티 (미완성) ----------
+   작성 시작 → 악보함에서 곡마다 [콘티에 추가] → 미완성 콘티 창 → [다음 곡 추가하기] 반복 → [💾 저장하기]로 완성 */
+const CUR_KEY = 'worship.curdraft.v1';
+const curDraft = () => {
+  if (!isLeader()) return null;
+  const id = readJSON(CUR_KEY, '');
+  const sl = id && setlists.find((x) => slId(x) === id);
+  return sl && canEditSetlist(sl) ? sl : null;
+};
+const setCurDraft = (id) => writeJSON(CUR_KEY, id || '');
+function addToDraft(songId, key) {
+  const cur = curDraft();
+  const sl = structuredClone(cur);
+  if (sl.songs.some((it) => it.songId === songId)) { closeModal(); return showDraft('이미 콘티에 있는 곡이에요'); }
+  const s = songMap[songId];
+  sl.songs.push({ songId, key: key || (s && s.versions[0].key) || null });
+  saveSetlist(sl);
+  const w = recentWarn(songId, sl.date);
+  closeModal();
+  showDraft(`${s ? s.title : '곡'}을(를) 추가했어요${w ? ` · ⚠ ${w.days}일 전에도 부른 곡` : ''}`);
+}
+function showDraft(msg) {
+  const sl = curDraft();
+  if (!sl) return;
+  openModal(`<h1>✏️ 작성 중인 콘티 <small class="badge none">미완성</small></h1>
+    <p class="sub" style="margin:0">${fmtDate(sl.date)} · ${esc(svcTitle(sl.service))}${msg ? ` · <b style="color:var(--accent)">${esc(msg)}</b>` : ''}</p>
+    ${sl.songs.length ? `<ol class="draftlist">${sl.songs.map((it, i) => { const s = songMap[it.songId] || {};
+      return `<li><span>${esc(s.title || '(알 수 없는 곡)')}</span> ${keyBadge(it.key)}
+        <button class="btn small" data-act="dr-mv" data-i="${i}" data-d="-1" ${i === 0 ? 'disabled' : ''}>↑</button>
+        <button class="btn small danger" data-act="dr-rm" data-i="${i}">빼기</button></li>`; }).join('')}</ol>`
+      : '<p class="sub">아직 곡이 없어요. 악보함에서 곡을 골라 주세요.</p>'}
+    <div class="draft-actions">
+      <button class="btn primary" data-act="dr-next">＋ 다음 곡 추가하기</button>
+      <button class="btn" data-act="dr-edit">순서 · 메모 · 유튜브 편집</button>
+      <button class="btn primary save" data-act="dr-save" ${sl.songs.length ? '' : 'disabled'}>💾 저장하기 (완성)</button>
+    </div>
+    <p class="memo">모든 곡을 고른 뒤 <b>💾 저장하기</b>를 누르면 콘티가 완성돼요.</p>`, true);
+}
+function draftBar() {
+  const sl = curDraft();
+  if (!sl) return '';
+  return `<div class="draftbar"><div><b>✏️ 작성 중</b> ${fmtDate(sl.date).slice(5)} ${esc(svcTitle(sl.service))} · <b>${sl.songs.length}곡</b> <span class="badge none">미완성</span></div>
+    <div class="row"><button class="btn small" data-act="dr-show">콘티 보기</button><button class="btn small primary" data-act="dr-save" ${sl.songs.length ? '' : 'disabled'}>💾 저장하기</button></div></div>`;
+}
+
 function openAddTo(songId, key) {
+  if (curDraft()) return addToDraft(songId, key);
   const s = songMap[songId];
   const today = todayStr();
   const upcoming = setlists.filter((x) => x.date >= today && canEditSetlist(x)).sort((a, b) => a.date.localeCompare(b.date));
@@ -506,6 +552,10 @@ function confirmAdd(songId, key) {
   saveSetlist(sl);
   closeModal();
   const w = recentWarn(songId, sl.date);
+  if (isLeader()) { // 인도자: 이 콘티를 '작성 중'으로 두고 미완성 콘티 창 보여주기
+    setCurDraft(slId(sl));
+    return showDraft(`${songMap[songId].title}을(를) 추가했어요${w ? ` · ⚠ ${w.days}일 전에도 부른 곡` : ''}`);
+  }
   toast(w ? `추가했어요 · ⚠ ${w.days}일 전에도 부른 곡이에요` : `${fmtDate(sl.date)} ${sl.service} 콘티에 추가했어요`);
   location.hash = `#/setlist/${encodeURIComponent(slId(sl))}`;
 }
@@ -599,7 +649,7 @@ async function sendGo(btn) {
   const done = (how) => {
     const sent = readJSON(SENT_KEY, {});
     sent[slId(sl)] = new Date().toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-    writeJSON(SENT_KEY, sent); closeModal(); render(); toast(how);
+    writeJSON(SENT_KEY, sent); if (readJSON(CUR_KEY, '') === slId(sl)) setCurDraft(''); closeModal(); render(); toast(how);
   };
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
     try { await navigator.share({ files: [file], title: name }); return done('저장했어요. 마스터가 반영하면 팀 사이트에 올라가요'); }
@@ -759,8 +809,8 @@ function writeBox() {
         <button class="btn primary" data-act="wb-start">작성 시작</button>
       </div>
       ${drafts.length ? `<div class="wb-drafts"><p class="sub" style="margin:10px 0 4px">작성 중인 콘티</p>
-        ${drafts.map((x) => `<a class="btn small" href="#/setlist/${encodeURIComponent(slId(x))}">${fmtDate(x.date)} · ${x.songs.length}곡${readJSON(SENT_KEY, {})[slId(x)] ? ' · 저장함' : ''}</a>`).join(' ')}</div>` : ''}
-      <p class="memo">순서: 작성 시작 → 악보함에서 곡 추가 (새 악보·유튜브도 올리기) → 💾 저장하기</p>
+        ${drafts.map((x) => `<button class="btn small" data-act="wb-open" data-sid="${esc(slId(x))}">${fmtDate(x.date)} · ${x.songs.length}곡 · ${readJSON(SENT_KEY, {})[slId(x)] ? '✅ 완성' : '✏️ 미완성'}</button>`).join(' ')}</div>` : ''}
+      <p class="memo">순서: 작성 시작 → 악보함에서 곡마다 <b>＋ 콘티에 추가</b> → <b>다음 곡 추가하기</b> 반복 → <b>💾 저장하기</b>로 완성</p>
     </section>`;
 }
 function renderHome() {
@@ -768,7 +818,7 @@ function renderHome() {
   const upcoming = setlists.filter((x) => x.date >= today).sort((a, b) => a.date.localeCompare(b.date));
   const past = setlists.filter((x) => x.date < today).slice(0, 4);
   const sub = MODE === 'team' && entry && entry.sid ? svcTitle((serviceList.find((x) => x.id === entry.sid) || {}).name) : '수요 · 금요 · 주일 오전 · 주일 오후';
-  return `${isLeader() ? writeBox() : ''}
+  return `${isLeader() ? writeBox() : ''}${draftBar()}
     <div class="row"><div><h1>콘티</h1><p class="sub">${esc(sub)}</p></div>
       <span class="spacer"></span>${canEdit() && !isLeader() ? '<button class="btn primary" data-act="new-setlist">＋ 새 콘티</button>' : ''}</div>
     <h2>다가오는 예배</h2>
@@ -802,7 +852,7 @@ function renderLibrary() {
       <button data-act="key" data-key="전체" class="${ui.key === '전체' ? 'on' : ''}">전체<span class="n">${songs.filter(hasScore).length}</span></button>
       ${keys.map((k) => `<button data-act="key" data-key="${esc(k)}" class="${ui.key === k ? 'on' : ''}">${esc(k)}<span class="n">${count[k]}</span></button>`).join('')}
     </div>
-    <div class="song-grid" id="grid">${renderGrid()}</div>`;
+    <div class="song-grid" id="grid">${renderGrid()}</div>${draftBar()}`;
 }
 
 function renderGrid() {
@@ -890,9 +940,9 @@ function renderSetlist(id) {
       ${sl.songs.length ? '<button class="btn primary" data-act="worship">▶ 예배 모드</button>' : ''}
       <button class="btn" data-act="copy">카톡용 복사</button>
       ${canEditSetlist(sl) ? `<button class="btn ${ed ? 'primary' : ''}" data-act="edit">${ed ? '편집 완료' : '편집'}</button>` : ''}
-      ${isLeader() && canEditSetlist(sl) ? '<button class="btn primary" data-act="send">💾 저장하기</button>' : ''}
+      ${isLeader() && canEditSetlist(sl) ? `<button class="btn" data-act="wb-open" data-sid="${esc(slId(sl))}">＋ 곡 추가하기</button><button class="btn primary" data-act="send">💾 저장하기</button>` : ''}
     </div>
-    ${isLeader() && readLocal().edited[slId(sl)] ? `<div class="draftline">✏️ 이 기기에서 작성한 콘티예요 · ${readJSON(SENT_KEY, {})[slId(sl)] ? `${esc(readJSON(SENT_KEY, {})[slId(sl)])}에 저장함 (마스터 반영 전)` : '아직 저장하지 않았어요 · 다 쓰면 💾 저장하기'}</div>` : ''}
+    ${isLeader() && readLocal().edited[slId(sl)] ? `<div class="draftline">✏️ 이 기기에서 작성한 콘티예요 · ${readJSON(SENT_KEY, {})[slId(sl)] ? `✅ 완성 · ${esc(readJSON(SENT_KEY, {})[slId(sl)])}에 저장함 (마스터 반영 전)` : '✏️ 미완성 · 모든 곡을 고른 뒤 💾 저장하기'}</div>` : ''}
     ${sl.songs.length ? `<div class="flowline">${keyLine}</div>` : ''}
     ${ed ? `<div class="field" style="margin-bottom:16px"><label>콘티 메모</label>
       <textarea id="sl-memo" rows="2" placeholder="예: 금요일 오후 7:50 모임">${esc(sl.memo || '')}</textarea></div>` : (sl.memo ? `<p class="memo" style="margin:-8px 0 16px">${esc(sl.memo)}</p>` : '')}
@@ -1110,11 +1160,18 @@ document.addEventListener('click', async (e) => {
       const sid = `${date}_${service}`;
       if (!setlists.find((x) => slId(x) === sid)) saveSetlist({ date, service, songs: [], memo: '' });
       else if (!readLocal().edited[sid]) saveSetlist(structuredClone(setlists.find((x) => slId(x) === sid)));
-      ui.editing = true;
-      location.hash = `#/setlist/${encodeURIComponent(sid)}`;
-      setTimeout(() => { ui.editing = true; render(); });
+      setCurDraft(sid);
+      location.hash = '#/library';
+      toast('곡을 골라 [＋ 콘티에 추가]를 눌러 주세요');
       break;
     }
+    case 'wb-open': setCurDraft(el.dataset.sid); showDraft(); break;
+    case 'dr-show': showDraft(); break;
+    case 'dr-next': closeModal(); if (!location.hash.startsWith('#/library')) location.hash = '#/library'; else render(); break;
+    case 'dr-edit': { const sl = curDraft(); closeModal(); ui.editing = true; location.hash = `#/setlist/${encodeURIComponent(slId(sl))}`; setTimeout(() => { ui.editing = true; render(); }); break; }
+    case 'dr-save': { const sl = curDraft(); closeModal(); location.hash = `#/setlist/${encodeURIComponent(slId(sl))}`; setTimeout(openSend, 50); break; }
+    case 'dr-rm': { const sl = structuredClone(curDraft()); sl.songs.splice(+el.dataset.i, 1); saveSetlist(sl); showDraft('곡을 뺐어요'); render(); break; }
+    case 'dr-mv': { const sl = structuredClone(curDraft()); const a = +el.dataset.i, b2 = a - 1; [sl.songs[a], sl.songs[b2]] = [sl.songs[b2], sl.songs[a]]; saveSetlist(sl); showDraft(); render(); break; }
     case 'new-song-save': saveNewSong(el); break;
     case 'send': openSend(); break;
     case 'send-go': sendGo(el); break;

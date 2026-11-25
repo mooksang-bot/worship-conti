@@ -297,3 +297,15 @@ body.locked .tabs, body.locked .logout { visibility: hidden; }
 .writebox h2 { margin: 0 0 2px; font-size: 19px; }
 .writebox input[type=date], .writebox select { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 7px 10px; font-size: 15px; }
 .wb-drafts .btn { margin: 2px 4px 2px 0; }
+/* 작성 중인 콘티 */
+.draftlist { margin: 12px 0; padding-left: 22px; }
+.draftlist li { margin: 6px 0; }
+.draftlist li span { font-weight: 500; margin-right: 4px; }
+.draftlist .btn { margin-left: 4px; }
+.draft-actions { display: grid; gap: 8px; margin-top: 6px; }
+.draft-actions .btn { justify-content: center; padding: 11px 14px; font-size: 15px; }
+.draft-actions .save { background: var(--warn); border-color: var(--warn); }
+.draftbar {
+  position: sticky; bottom: 10px; z-index: 5; margin-top: 16px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between;
+  background: var(--surface); border: 2px solid var(--accent); border-radius: 14px; padding: 10px 12px; box-shadow: 0 6px 20px rgba(0,0,0,.12);
+}
