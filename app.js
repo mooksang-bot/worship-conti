@@ -4,13 +4,21 @@
 //  - team  (팀원 공유 사이트): tools/build_site.py 가 만든 암호화 사이트. 비밀번호로 열고 보기 전용
 
 const MODE = window.SITE_MODE || 'local';
-const CAN_EDIT = MODE !== 'team';
+// 편집 권한: 마스터 컴퓨터(local) 또는 팀 사이트에 '인도자'로 로그인했을 때
+const isLeader = () => MODE === 'team' && !!access && access.role === 'leader';
+const canEdit = () => MODE !== 'team' || isLeader();
+const NEWSONG_KEY = 'worship.newsongs.v1'; // 인도자가 추가한 새 곡 (보내기 전까지 이 기기에만)
+const SENT_KEY = 'worship.sent.v1';       // 마스터에게 보낸 기록
 const KEY_ORDER = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
 // 예배 목록: data/services.json (팀 사이트에서는 암호화된 lib.bin 안에 있음)
 let serviceList = [];
 const services = () => [...new Set([...serviceList.map((x) => x.name), ...setlists.map((x) => x.service)])];
 const serviceOf = (name) => serviceList.find((x) => x.name === name || (x.aliases || []).includes(name));
 // 예배 이름으로 기본 요일 정하기 (수=3, 금=5, 주일=0)
+// 내가 편집할 수 있는 예배 (인도자는 맡은 예배만)
+const editableServices = () => (MODE !== 'team' ? services()
+  : serviceList.filter((x) => ((access && access.sids) || []).includes(x.id)).map((x) => x.name));
+const canEditSetlist = (sl) => MODE !== 'team' || (isLeader() && editableServices().includes((serviceOf(sl.service) || {}).name));
 const serviceDow = (name) => (/수요/.test(name) ? 3 : /금요/.test(name) ? 5 : /주일/.test(name) ? 0 : 5);
 const DAYS = ['일', '월', '화', '수', '목', '금', '토'];
 const LOCAL_KEY = 'worship.setlists.v1';
@@ -59,6 +67,7 @@ async function load() {
 
 // 인도자 컴퓨터: data/setlists.json 에 저장. 서버가 없으면 이 브라우저에 임시 저장
 async function persist() {
+  if (MODE === 'team') return true; // 인도자 작성본은 이 기기에 저장 → '마스터에게 보내기'로 전달
   if (!serverSave) return false;
   const body = JSON.stringify([...setlists].sort((a, b) => a.date.localeCompare(b.date)), null, 2);
   const ok = await fetch('/api/setlists', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
@@ -119,7 +128,7 @@ async function tryKey(kek, meta) {
       libKey = await importAes(b64(box.lib));
       svcKeys = {};
       for (const [id, k] of Object.entries(box.svc || {})) svcKeys[id] = await importAes(b64(k));
-      access = { role: box.role, label: box.label };
+      access = { role: box.role, label: box.label, name: box.name, login: box.login, sids: Object.keys(box.svc || {}) };
       return true;
     } catch {}
   }
@@ -151,7 +160,15 @@ async function loadTeam() {
   for (const [id, key] of Object.entries(svcKeys)) {
     try { list = list.concat(JSON.parse(new TextDecoder().decode(await decryptWith(key, await get(`svc-${id}.bin`))))); } catch {}
   }
-  setData(lib.songs, list);
+  if (access.role === 'leader') {
+    const ns = Object.values(readNewSongs());
+    const local = readLocal();
+    const map = {};
+    list.forEach((x) => (map[slId(x)] = x));
+    Object.entries(local.edited).forEach(([id, x]) => (map[id] = x));
+    local.deleted.forEach((id) => delete map[id]);
+    setData(lib.songs.concat(ns), Object.values(map));
+  } else setData(lib.songs, list);
 }
 const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 function lockScreen(meta, inviteFailed) {
@@ -159,12 +176,22 @@ function lockScreen(meta, inviteFailed) {
   $('#app').innerHTML = `<div class="card lock"><h1>찬양팀 콘티</h1>
     <p class="sub">${inviteFailed ? '초대 링크가 만료됐어요. 예배 비밀번호를 입력해 주세요' : '예배 비밀번호를 입력해 주세요'}</p>
     <form id="lockform">
+      <div id="loginrow" hidden style="margin-bottom:8px"><input id="login" type="text" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="인도자 아이디"></div>
       <div class="pwrow"><input id="pw" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="비밀번호 또는 초대 링크 붙여넣기" autofocus>
         <button type="button" class="btn small" id="pwtoggle">보기</button></div>
       <label class="row" style="gap:6px;margin-top:10px;font-size:14px"><input type="checkbox" id="remember" checked>이 기기에서 기억하기</label>
       <button class="btn primary" style="width:100%;justify-content:center;margin-top:14px">열기</button>
+      <p style="text-align:center;margin:12px 0 0;font-size:14px"><a href="#" id="leaderlink">인도자 로그인</a></p>
       ${standalone() ? '<p class="sub" style="margin:10px 0 0;font-size:13px">📱 홈 화면 앱은 처음 한 번 비밀번호나 초대 링크를 넣어야 해요. 카톡의 초대 링크를 길게 눌러 복사한 뒤 위 칸에 붙여넣어도 돼요.</p>' : ''}
       <p id="pwmsg" class="sub" style="margin:10px 0 0;color:var(--warn)"></p></form></div>`;
+  $('#leaderlink').addEventListener('click', (e) => {
+    e.preventDefault();
+    const on = $('#loginrow').hidden;
+    $('#loginrow').hidden = !on;
+    $('#leaderlink').textContent = on ? '팀원으로 보기 (예배 비밀번호)' : '인도자 로그인';
+    $('#pw').placeholder = on ? '인도자 비밀번호' : '비밀번호 또는 초대 링크 붙여넣기';
+    (on ? $('#login') : $('#pw')).focus();
+  });
   $('#pwtoggle').addEventListener('click', () => {
     const i = $('#pw'); const show = i.type === 'password';
     i.type = show ? 'text' : 'password'; $('#pwtoggle').textContent = show ? '숨기기' : '보기'; i.focus();
@@ -182,8 +209,9 @@ function lockScreen(meta, inviteFailed) {
         key = await crypto.subtle.importKey('raw', b64(raw + '==='.slice((raw.length + 3) % 4)), 'AES-GCM', true, ['decrypt']).catch(() => null);
         if (!(key && (await tryKey(key, meta)))) { $('#pwmsg').textContent = '초대 링크가 만료됐어요. 인도자에게 새 링크를 받아 주세요'; return; }
       } else {
-        key = await deriveKey(val, meta);
-        if (!(await tryKey(key, meta))) { $('#pwmsg').textContent = '비밀번호가 맞지 않아요'; return; }
+        const login = $('#loginrow').hidden ? '' : $('#login').value.trim().toLowerCase();
+        key = await deriveKey(login ? `${login}\n${val}` : val, meta);
+        if (!(await tryKey(key, meta))) { $('#pwmsg').textContent = login ? '아이디 또는 비밀번호가 맞지 않아요' : '비밀번호가 맞지 않아요'; return; }
       }
       if ($('#remember').checked) {
         const raw = new Uint8Array(await crypto.subtle.exportKey('raw', key));
@@ -199,11 +227,44 @@ function logout() {
   location.reload();
 }
 
+/* ---------- 기기 저장소 (인도자가 올린 사진 · 새 곡) ---------- */
+function idbOpen() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('worship', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('files');
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+}
+async function idbPut(k, v) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => { const t = db.transaction('files', 'readwrite'); t.objectStore('files').put(v, k); t.oncomplete = res; t.onerror = () => rej(t.error); });
+}
+async function idbGet(k) {
+  const db = await idbOpen().catch(() => null);
+  if (!db) return null;
+  return new Promise((res) => { const r = db.transaction('files').objectStore('files').get(k); r.onsuccess = () => res(r.result); r.onerror = () => res(null); });
+}
+// 휴대폰 사진은 크기가 커서 긴 쪽 2000px JPEG로 줄여서 저장
+async function compressImage(file, max = 2000) {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+  g.drawImage(bmp, 0, 0, c.width, c.height);
+  return new Promise((res) => c.toBlob(res, 'image/jpeg', 0.85));
+}
+const blobToDataURL = (b) => new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(b); });
+const readJSON = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d; } catch { return d; } };
+const writeJSON = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { toast('기기 저장 공간이 부족해요'); } };
+const readNewSongs = () => readJSON(NEWSONG_KEY, {});
+
 // 악보 이미지: 팀 사이트에서는 암호화된 파일을 받아 풀어서 보여줌
 const imgCache = {};
 async function hydrateImg(img) {
   const p = img.dataset.src;
   img.removeAttribute('data-src');
+  if (p.startsWith('idb:')) { const blob = await idbGet(p.slice(4)); if (blob) img.src = URL.createObjectURL(blob); return; }
   if (MODE !== 'team') { img.src = '../' + p.split('/').map(encodeURIComponent).join('/'); return; }
   try {
     if (!imgCache[p]) {
@@ -336,7 +397,7 @@ function openSong(songId, key) {
     ${flow ? `<div class="flow">${esc(flow)}</div>` : ''}
     ${s.memo ? `<div class="memo">${esc(s.memo)}</div>` : ''}
     <div class="row song-actions">
-      ${CAN_EDIT ? `<button class="btn primary" data-act="add-to" data-id="${s.id}" data-key="${esc(v.key || '')}">＋ 콘티에 추가</button>` : ''}
+      ${canEdit() ? `<button class="btn primary" data-act="add-to" data-id="${s.id}" data-key="${esc(v.key || '')}">＋ 콘티에 추가</button>` : ''}
       ${ytId(s.youtube) ? `<button class="btn yt" data-act="yt" data-id="${s.id}">▶ 유튜브</button>` : ''}
     </div>
     ${v.files.length ? `<div class="scores">${v.files.map((f) => `<img data-src="${esc(f)}" alt="${esc(s.title)} 악보">`).join('')}</div>`
@@ -346,15 +407,15 @@ function openSong(songId, key) {
 function openAddTo(songId, key) {
   const s = songMap[songId];
   const today = todayStr();
-  const upcoming = setlists.filter((x) => x.date >= today).sort((a, b) => a.date.localeCompare(b.date));
+  const upcoming = setlists.filter((x) => x.date >= today && canEditSetlist(x)).sort((a, b) => a.date.localeCompare(b.date));
   const opts = upcoming.map((x) => `<option value="${esc(slId(x))}">${fmtDate(x.date)} ${esc(x.service)}</option>`).join('');
   openModal(`<h1>콘티에 추가</h1>
     <p class="sub">${esc(s.title)} ${keyBadge(key)}</p>
     <div class="field"><label>콘티 선택</label>
       <select id="add-target">${opts}<option value="__new">＋ 새 콘티 만들기</option></select></div>
     <div id="new-fields" ${opts ? 'hidden' : ''}>
-      <div class="field"><label>날짜</label><input type="date" id="add-date" value="${nextDay(serviceDow(services()[0] || ""))}"></div>
-      <div class="field"><label>예배</label><select id="add-svc">${services().map((x) => `<option>${x}</option>`).join('')}</select></div>
+      <div class="field"><label>날짜</label><input type="date" id="add-date" value="${nextDay(serviceDow(editableServices()[0] || ""))}"></div>
+      <div class="field"><label>예배</label><select id="add-svc">${editableServices().map((x) => `<option>${x}</option>`).join('')}</select></div>
     </div>
     ${s.versions.length > 1 ? `<div class="field"><label>키</label><select id="add-key">${s.versions.map((v) => `<option ${v.key === key ? 'selected' : ''}>${esc(v.key)}</option>`).join('')}</select></div>` : ''}
     <div class="row" style="margin-top:16px"><span class="spacer"></span>
@@ -390,8 +451,8 @@ function confirmAdd(songId, key) {
 
 function openNewSetlist() {
   openModal(`<h1>새 콘티</h1>
-    <div class="field"><label>예배</label><select id="new-svc">${services().map((x) => `<option>${x}</option>`).join('')}</select></div>
-    <div class="field"><label>날짜</label><input type="date" id="new-date" value="${nextDay(serviceDow(services()[0] || ""))}"></div>
+    <div class="field"><label>예배</label><select id="new-svc">${editableServices().map((x) => `<option>${x}</option>`).join('')}</select></div>
+    <div class="field"><label>날짜</label><input type="date" id="new-date" value="${nextDay(serviceDow(editableServices()[0] || ""))}"></div>
     <div class="row" style="margin-top:16px"><span class="spacer"></span>
       <button class="btn primary" data-act="new-confirm">만들기</button></div>`, true);
   $('#new-svc').addEventListener('change', (e) => {
@@ -399,6 +460,115 @@ function openNewSetlist() {
   });
 }
 
+
+/* ---------- 새 곡 · 악보 올리기 ---------- */
+function openNewSong() {
+  openModal(`<h1>새 곡 · 악보 올리기</h1>
+    <div class="field"><label>곡 제목</label><input id="ns-title" placeholder="예: 주의 이름 높이며"></div>
+    <div class="field"><label>키</label><select id="ns-key">${['모름', ...KEY_ORDER].map((k) => `<option>${k}</option>`).join('')}</select></div>
+    <div class="field"><label>유튜브 링크 (선택)</label><input id="ns-yt" placeholder="https://youtu.be/..." autocapitalize="off"></div>
+    <div class="field"><label>진행 순서 (선택)</label><input id="ns-flow" placeholder="예: Int ~ A A B ~ C C ~ 기도"></div>
+    <div class="field"><label>악보 사진 (여러 장 가능)</label><input type="file" id="ns-files" accept="image/*" multiple></div>
+    <div class="row" style="margin-top:16px"><span class="spacer"></span><button class="btn primary" data-act="new-song-save">추가</button></div>`, true);
+}
+async function saveNewSong(btn) {
+  const title = $('#ns-title').value.trim();
+  const yt = $('#ns-yt').value.trim();
+  const flow = $('#ns-flow').value.trim();
+  const key = $('#ns-key').value === '모름' ? null : $('#ns-key').value;
+  if (!title) return toast('곡 제목을 적어 주세요');
+  if (yt && !ytId(yt)) return toast('유튜브 링크를 확인해 주세요');
+  btn.disabled = true; btn.textContent = '저장 중…';
+  const blobs = [];
+  for (const f of $('#ns-files').files) blobs.push(await compressImage(f));
+  let id;
+  if (MODE !== 'team') {
+    const files = await Promise.all(blobs.map(blobToDataURL));
+    const r = await fetch('/api/import', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ submission: { type: 'worship-conti-submission', v: 1, newSongs: [{ tempId: 'tmp', title, key, youtube: yt, flow, files }] }, deploy: false }) })
+      .then(async (x) => ({ ok: x.ok, text: await x.text() })).catch((e) => ({ ok: false, text: String(e) }));
+    if (!r.ok) { btn.disabled = false; btn.textContent = '추가'; return toast('실패: ' + r.text); }
+    await load();
+    id = (songs.find((x) => x.title === title) || {}).id;
+  } else {
+    id = 'new-' + Date.now().toString(36);
+    const refs = [];
+    for (let i = 0; i < blobs.length; i++) { await idbPut(`${id}-${i}`, blobs[i]); refs.push(`idb:${id}-${i}`); }
+    const song = { id, title, versions: [{ key, files: refs }], time: null, tempo: null, flow, memo: '', tags: ['새 곡'], youtube: yt, _new: true };
+    const ns = readNewSongs(); ns[id] = song; writeJSON(NEWSONG_KEY, ns);
+    songs.push(song); songMap[id] = song;
+  }
+  closeModal(); render();
+  toast(MODE === 'team' ? '새 곡을 추가했어요. 콘티에 넣고 마스터에게 보내 주세요' : '악보함에 추가했어요 (팀 사이트 반영은 관리에서)');
+  if (id) openSong(id);
+}
+
+/* ---------- 인도자 → 마스터에게 보내기 ---------- */
+function openSend() {
+  const sl = currentSetlist();
+  const newCount = sl.songs.filter((it) => (songMap[it.songId] || {})._new).length;
+  openModal(`<h1>📤 마스터에게 보내기</h1>
+    <p class="sub">${fmtDate(sl.date)} ${esc(sl.service)} · 곡 ${sl.songs.length}개${newCount ? ` · 새 곡 ${newCount}개(악보 포함)` : ''}</p>
+    <div class="field"><label>마스터에게 남길 말 (선택)</label><textarea id="sd-msg" rows="2" placeholder="예: 3번 곡 키를 한 키 올렸어요"></textarea></div>
+    <div class="field"><label>${esc(sl.service)} 팀원 비밀번호 바꾸기 요청 (선택 · 영문·숫자 4자 이상)</label><input id="sd-pw" autocapitalize="off" autocorrect="off"></div>
+    <div class="row" style="margin-top:14px"><span class="spacer"></span><button class="btn primary" data-act="send-go">보내기 파일 만들기</button></div>
+    <p class="memo">📱 휴대폰: 공유 창이 열리면 <b>카카오톡</b> → 마스터를 골라 보내세요.<br>💻 컴퓨터: 파일이 저장돼요. 카톡으로 마스터에게 보내 주세요.</p>`, true);
+}
+async function sendGo(btn) {
+  const sl = structuredClone(currentSetlist());
+  const pw = $('#sd-pw').value.trim();
+  if (pw && (pw.length < 4 || !/^[\x21-\x7E]+$/.test(pw))) return toast('비밀번호는 영문·숫자 4자 이상이어야 해요');
+  btn.disabled = true; btn.textContent = '만드는 중…';
+  const newSongs = [];
+  for (const id of [...new Set(sl.songs.map((it) => it.songId))]) {
+    const s = songMap[id];
+    if (!s || !s._new) continue;
+    const files = [];
+    for (const f of s.versions[0].files) { const b = await idbGet(f.slice(4)); if (b) files.push(await blobToDataURL(b)); }
+    newSongs.push({ tempId: id, title: s.title, key: s.versions[0].key, youtube: s.youtube, flow: s.flow, files });
+  }
+  const sub = { type: 'worship-conti-submission', v: 1, createdAt: new Date().toISOString(),
+    from: { name: access.name || '', login: access.login || '' }, service: sl.service, setlist: sl, newSongs,
+    message: $('#sd-msg').value.trim(), passwordRequest: pw || null };
+  const name = `콘티_${sl.date}_${sl.service}_${access.name || access.login || '인도자'}.json`.replace(/\s+/g, '');
+  const file = new File([JSON.stringify(sub)], name, { type: 'application/json' });
+  const done = (how) => {
+    const sent = readJSON(SENT_KEY, {});
+    sent[slId(sl)] = new Date().toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    writeJSON(SENT_KEY, sent); closeModal(); render(); toast(how);
+  };
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: name }); return done('보냈어요. 마스터가 반영하면 팀 사이트에 올라가요'); }
+    catch (e) { if (e.name === 'AbortError') { btn.disabled = false; btn.textContent = '보내기 파일 만들기'; return; } }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(file); a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  done('파일을 저장했어요. 카톡으로 마스터에게 보내 주세요');
+}
+
+/* ---------- 마스터: 인도자가 보낸 콘티 가져오기 ---------- */
+let impData = null;
+async function previewImport(file) {
+  let sub;
+  try { sub = JSON.parse(await file.text()); } catch { return toast('콘티 파일을 읽을 수 없어요'); }
+  if (!sub || sub.type !== 'worship-conti-submission') return toast('인도자 페이지에서 만든 콘티 파일이 아니에요');
+  impData = sub;
+  const sl = sub.setlist;
+  const tmp = Object.fromEntries((sub.newSongs || []).map((n) => [n.tempId, n]));
+  const exists = sl && setlists.find((x) => slId(x) === slId(sl));
+  $('#imp-preview').innerHTML = `<div class="imp">
+    <p><b>${esc((sub.from && sub.from.name) || '이름 없음')}</b>${sub.from && sub.from.login ? ` (${esc(sub.from.login)})` : ''} · ${sub.createdAt ? new Date(sub.createdAt).toLocaleString('ko-KR') : ''}</p>
+    ${sl ? `<p><b>${fmtDate(sl.date)} ${esc(sl.service)}</b>${exists ? ' <span class="badge none">같은 날짜 콘티를 새 내용으로 바꿔요</span>' : ''}</p>
+    <ol>${sl.songs.map((it) => {
+      const n = tmp[it.songId]; const s = songMap[it.songId];
+      return `<li>${esc(n ? n.title : s ? s.title : '(알 수 없는 곡)')} ${keyBadge(it.key)}${n ? ` <span class="badge new">새 곡 · 악보 ${n.files.length}장</span>` : ''}${it.youtube ? ' ▶' : ''}${it.note ? ` <small>📝 ${esc(it.note)}</small>` : ''}</li>`;
+    }).join('')}</ol>` : ''}
+    ${sub.message ? `<p class="memo">💬 ${esc(sub.message)}</p>` : ''}
+    ${sub.passwordRequest ? `<label class="row" style="gap:6px"><input type="checkbox" id="imp-pw" checked> ${esc(sl ? sl.service : '')} 팀원 비밀번호를 <b>${esc(sub.passwordRequest)}</b>(으)로 바꾸기</label>` : ''}
+    <div class="row" style="margin-top:10px"><button class="btn primary" data-act="imp-go">반영하고 팀 사이트에 올리기</button>
+      <button class="btn" data-act="imp-cancel">취소</button></div>
+    <p class="memo" id="impmsg"></p></div>`;
+}
 
 /* ---------- 예배 모드 (전체화면 악보 넘기기) ---------- */
 let wm = null; // { pages, i, fit, hud, lock }
@@ -515,10 +685,10 @@ function renderHome() {
   const upcoming = setlists.filter((x) => x.date >= today).sort((a, b) => a.date.localeCompare(b.date));
   const past = setlists.filter((x) => x.date < today).slice(0, 4);
   return `<div class="row"><div><h1>콘티</h1><p class="sub">금요 찬양 · 주일 오전 찬양</p></div>
-      <span class="spacer"></span>${CAN_EDIT ? '<button class="btn primary" data-act="new-setlist">＋ 새 콘티</button>' : ''}</div>
+      <span class="spacer"></span>${canEdit() ? '<button class="btn primary" data-act="new-setlist">＋ 새 콘티</button>' : ''}</div>
     <h2>다가오는 예배</h2>
     ${upcoming.length ? `<div class="setlist-cards">${upcoming.map(setlistCard).join('')}</div>`
-      : `<div class="card empty">예정된 콘티가 없어요.${CAN_EDIT ? '<br>악보함에서 곡을 골라 "콘티에 추가"를 눌러 보세요.' : '<br>인도자가 콘티를 올리면 여기에 보여요.'}</div>`}
+      : `<div class="card empty">예정된 콘티가 없어요.${canEdit() ? '<br>악보함에서 곡을 골라 "콘티에 추가"를 눌러 보세요.' : '<br>인도자가 콘티를 올리면 여기에 보여요.'}</div>`}
     ${past.length ? `<h2>최근 인도</h2><div class="setlist-cards">${past.map(setlistCard).join('')}</div>` : ''}`;
 }
 
@@ -537,7 +707,8 @@ function libraryKeys() {
 
 function renderLibrary() {
   const { keys, count } = libraryKeys();
-  return `<h1>악보함</h1><p class="sub">${songs.filter(hasScore).length}곡 · 키별로 정리</p>
+  return `<div class="row"><div><h1>악보함</h1><p class="sub">${songs.filter(hasScore).length}곡 · 키별로 정리</p></div>
+      <span class="spacer"></span>${canEdit() ? '<button class="btn primary" data-act="new-song">＋ 새 곡 · 악보 올리기</button>' : ''}</div>
     <div class="toolbar"><input class="search" id="q" type="search" placeholder="곡 제목 검색" value="${esc(ui.q)}">
       <select class="search" id="sort" style="flex:0 1 170px">
         ${[['title', '제목순'], ['most', '많이 부른 순'], ['oldest', '오래 안 부른 순']].map(([v, t]) => `<option value="${v}" ${ui.sort === v ? 'selected' : ''}>${t}</option>`).join('')}
@@ -574,7 +745,7 @@ function renderGrid() {
       : `<span class="used">아직 안 부름</span>`;
     cards.push(`<button class="card song-card" data-act="song" data-id="${s.id}" data-key="${esc(v.key || '')}">
       <div class="thumb">${v.files.length ? `<img loading="lazy" data-src="${esc(v.files[0])}" alt="">` : '악보 없음'}</div>
-      <div class="meta"><div class="title">${esc(s.title)}</div><div class="keys">${keys}</div>${usedTag}</div></button>`);
+      <div class="meta"><div class="title">${s._new ? '<span class="badge new">새 곡</span> ' : ''}${esc(s.title)}</div><div class="keys">${keys}</div>${usedTag}</div></button>`);
   });
   return cards.join('') || `<p class="empty" style="grid-column:1/-1">검색 결과가 없어요</p>`;
 }
@@ -583,7 +754,7 @@ function renderGrid() {
 function renderSetlist(id) {
   const sl = setlists.find((x) => slId(x) === id);
   if (!sl) return `<p class="empty">콘티를 찾을 수 없어요. <a href="#/">처음으로</a></p>`;
-  const ed = CAN_EDIT && ui.editing;
+  const ed = canEditSetlist(sl) && ui.editing;
   const keyLine = sl.songs.map((it, i) => {
     const link = it.linkNext && i < sl.songs.length - 1 ? '<span class="link">이어서</span>' : '';
     return keyBadge(it.key) + (i < sl.songs.length - 1 ? ` ${link}<span class="arrow">→</span>` : '');
@@ -607,6 +778,7 @@ function renderSetlist(id) {
         <label class="row" style="gap:4px;font-size:13px"><input type="checkbox" data-act="link" data-i="${i}" ${it.linkNext ? 'checked' : ''}>다음 곡과 이어서</label>
         <button class="btn small danger" data-act="rm" data-i="${i}">삭제</button>
         <input type="text" data-act="note" data-i="${i}" placeholder="인도자 메모 (예: 후렴 2번 반복)" value="${esc(it.note || '')}">
+        <input type="text" data-act="ytset" data-i="${i}" placeholder="유튜브 링크 (이 콘티에서 쓸 영상)" value="${esc(it.youtube || '')}">
       </div>` : '';
     return `<section class="card song-block">
         <div class="song-head"><span class="num">${i + 1}</span>
@@ -627,17 +799,19 @@ function renderSetlist(id) {
   }).join('');
 
   return `<div class="row">
-      <div><div class="sub" style="margin:0;color:var(--accent);font-weight:500">${esc(sl.service)}${sl.meetTime ? ` · ${esc(sl.meetTime)} 모임` : ''}</div>
+      <div><div class="sub" style="margin:0;color:var(--accent);font-weight:500">${esc(sl.service)}${sl.meetTime ? ` · ${esc(sl.meetTime)} 모임` : ''}${sl.leader ? ` · 인도 ${esc(sl.leader)}` : ''}</div>
         <h1>${fmtDate(sl.date)}</h1></div>
       <span class="spacer"></span>
       ${sl.songs.length ? '<button class="btn primary" data-act="worship">▶ 예배 모드</button>' : ''}
       <button class="btn" data-act="copy">카톡용 복사</button>
-      ${CAN_EDIT ? `<button class="btn ${ed ? 'primary' : ''}" data-act="edit">${ed ? '편집 완료' : '편집'}</button>` : ''}
+      ${canEditSetlist(sl) ? `<button class="btn ${ed ? 'primary' : ''}" data-act="edit">${ed ? '편집 완료' : '편집'}</button>` : ''}
+      ${isLeader() && canEditSetlist(sl) ? '<button class="btn primary" data-act="send">📤 마스터에게 보내기</button>' : ''}
     </div>
+    ${isLeader() && readLocal().edited[slId(sl)] ? `<div class="draftline">✏️ 이 기기에서 작성한 콘티예요 · ${readJSON(SENT_KEY, {})[slId(sl)] ? `${esc(readJSON(SENT_KEY, {})[slId(sl)])}에 마스터에게 보냄` : '아직 마스터에게 보내지 않았어요'}</div>` : ''}
     ${sl.songs.length ? `<div class="flowline">${keyLine}</div>` : ''}
     ${ed ? `<div class="field" style="margin-bottom:16px"><label>콘티 메모</label>
       <textarea id="sl-memo" rows="2" placeholder="예: 금요일 오후 7:50 모임">${esc(sl.memo || '')}</textarea></div>` : (sl.memo ? `<p class="memo" style="margin:-8px 0 16px">${esc(sl.memo)}</p>` : '')}
-    ${blocks || `<div class="card empty">아직 곡이 없어요.${CAN_EDIT ? ' <a href="#/library">악보함</a>에서 곡을 추가해 주세요.' : ''}</div>`}
+    ${blocks || `<div class="card empty">아직 곡이 없어요.${canEdit() ? ' <a href="#/library">악보함</a>에서 곡을 추가해 주세요.' : ''}</div>`}
     ${ed ? `<div class="row"><a class="btn" href="#/library">＋ 곡 추가하러 가기</a><span class="spacer"></span>
       <button class="btn danger" data-act="del-setlist">콘티 삭제</button></div>` : ''}`;
 }
@@ -710,7 +884,7 @@ function renderHistory() {
 
 /* ---------- 화면: 관리 (인도자 컴퓨터에서만) ---------- */
 function renderAdmin() {
-  if (!(CAN_EDIT && serverSave)) return `<p class="empty">관리 메뉴는 인도자 컴퓨터에서만 쓸 수 있어요.<br><small>"인도자 화면 열기"로 열어 주세요.</small></p>`;
+  if (!(canEdit() && serverSave)) return `<p class="empty">관리 메뉴는 인도자 컴퓨터에서만 쓸 수 있어요.<br><small>"인도자 화면 열기"로 열어 주세요.</small></p>`;
   return `<h1>마스터 관리</h1><p class="sub">마스터만 보이는 메뉴예요 · 바꾼 내용은 [저장하고 반영]을 눌러야 팀 사이트에 적용돼요</p>
     <section class="card" style="padding:16px">
       <h2 style="margin-top:0">예배 · 인도자 · 팀원 비밀번호</h2>
@@ -718,6 +892,12 @@ function renderAdmin() {
       <div id="svc-admin"><p class="sub">불러오는 중…</p></div>
       <div class="row" style="margin-top:14px"><button class="btn primary" data-act="svc-save">저장하고 팀 사이트에 반영</button></div>
       <p class="memo" id="svcmsg"></p>
+    </section>
+    <section class="card" style="padding:16px;margin-top:16px">
+      <h2 style="margin-top:0">📥 인도자가 보낸 콘티 가져오기</h2>
+      <p class="sub" style="margin:0 0 8px">카톡으로 받은 <b>콘티_….json</b> 파일을 골라 주세요. 미리보기를 확인하고 반영하면 팀 사이트에 올라가요.</p>
+      <input type="file" id="imp-file" accept=".json,application/json">
+      <div id="imp-preview"></div>
     </section>
     <section class="card" style="padding:16px;margin-top:16px">
       <h2 style="margin-top:0">마스터 비밀번호 <small class="sub">(모든 예배 보기)</small></h2>
@@ -753,9 +933,11 @@ function drawSvcAdmin() {
         <div class="pwrow"><input type="password" class="svc-pw" value="${esc(x.password || '')}" autocomplete="off">
           <button class="btn small" data-act="svc-pwshow">보기</button></div></div>
       <div class="field"><label>인도자</label>
+        <p class="sub" style="margin:0 0 2px;font-size:12px">아이디·로그인 비밀번호를 넣으면 그 인도자가 팀 사이트에서 '인도자 로그인'으로 콘티를 쓸 수 있어요</p>
         ${(x.leaders || []).map((l, li) => `<div class="pwrow ld" style="margin-top:6px">
           <input class="ld-name" placeholder="이름" value="${esc(l.name)}">
-          <input class="ld-login" placeholder="아이디 (예: fri1)" value="${esc(l.login || '')}">
+          <input class="ld-login" placeholder="아이디 (예: fri1)" value="${esc(l.login || '')}" autocapitalize="off">
+          <input class="ld-pw" type="password" placeholder="로그인 비밀번호" value="${esc(l.password || '')}" autocomplete="off">
           <button class="btn small danger" data-act="ld-rm" data-si="${si}" data-li="${li}">삭제</button></div>`).join('') || '<p class="sub" style="margin:2px 0">아직 인도자가 없어요</p>'}
         <div><button class="btn small" data-act="ld-add" data-si="${si}" style="margin-top:6px">＋ 인도자 추가</button></div></div>
     </div>`).join('');
@@ -765,7 +947,8 @@ function collectSvcAdmin() {
   document.querySelectorAll('.svc-card').forEach((c) => {
     const x = adminSvc[+c.dataset.si];
     x.password = c.querySelector('.svc-pw').value.trim();
-    x.leaders = [...c.querySelectorAll('.ld')].map((r) => ({ name: r.querySelector('.ld-name').value.trim(), login: r.querySelector('.ld-login').value.trim() }));
+    x.leaders = [...c.querySelectorAll('.ld')].map((r) => ({ name: r.querySelector('.ld-name').value.trim(),
+      login: r.querySelector('.ld-login').value.trim().toLowerCase(), password: r.querySelector('.ld-pw').value.trim() }));
   });
 }
 async function adminCall(path, body, btn) {
@@ -824,6 +1007,18 @@ document.addEventListener('click', async (e) => {
     case 'mv': mutate((sl) => { const a = +i, b = a + +d; [sl.songs[a], sl.songs[b]] = [sl.songs[b], sl.songs[a]]; }); break;
     case 'rm': mutate((sl) => sl.songs.splice(+i, 1)); break;
     case 'worship': openWorship(currentSetlist()); break;
+    case 'new-song': openNewSong(); break;
+    case 'new-song-save': saveNewSong(el); break;
+    case 'send': openSend(); break;
+    case 'send-go': sendGo(el); break;
+    case 'imp-cancel': impData = null; $('#imp-preview').innerHTML = ''; $('#imp-file').value = ''; break;
+    case 'imp-go': {
+      if (!impData) return;
+      const r = await adminCall('/api/import', { submission: impData, applyPassword: !!($('#imp-pw') && $('#imp-pw').checked), deploy: true }, el);
+      $('#impmsg').textContent = r.ok ? '✅ ' + r.text : '❌ ' + r.text;
+      if (r.ok) { impData = null; await load(); }
+      break;
+    }
     case 'pw-show': {
       const t = await fetch('/api/password').then((r) => r.text()).catch(() => '');
       $('#curpw').textContent = t || '(없음)'; break;
@@ -849,6 +1044,10 @@ document.addEventListener('click', async (e) => {
       collectSvcAdmin();
       for (const x of adminSvc) {
         if (x.password && (x.password.length < 4 || !/^[\x21-\x7E]+$/.test(x.password))) return toast(`${x.name}: 비밀번호는 영문·숫자 4자 이상이어야 해요`);
+        for (const l of x.leaders) {
+          if (l.login && !/^[a-z0-9_-]{2,20}$/.test(l.login)) return toast(`${l.name}: 아이디는 영문 소문자·숫자 2~20자로 정해 주세요`);
+          if (l.login && l.password && (l.password.length < 4 || !/^[\x21-\x7E]+$/.test(l.password))) return toast(`${l.name}: 로그인 비밀번호는 영문·숫자 4자 이상이어야 해요`);
+        }
       }
       const r = await adminCall('/api/services', { services: adminSvc }, el);
       $('#svcmsg').textContent = r.ok ? '✅ 저장했어요 · 1~2분 뒤 팀 사이트에 적용돼요' : '❌ ' + r.text;
@@ -886,12 +1085,18 @@ document.addEventListener('click', async (e) => {
 });
 
 document.addEventListener('change', (e) => {
+  if (e.target.id === 'imp-file' && e.target.files[0]) return previewImport(e.target.files[0]);
   const el = e.target.closest('[data-act]');
   if (!el) return;
   const i = +el.dataset.i;
   if (el.dataset.act === 'set-key') mutate((sl) => (sl.songs[i].key = el.value));
   if (el.dataset.act === 'link') mutate((sl) => (sl.songs[i].linkNext = el.checked));
   if (el.dataset.act === 'note') mutate((sl) => (sl.songs[i].note = el.value));
+  if (el.dataset.act === 'ytset') {
+    const v = el.value.trim();
+    if (v && !ytId(v)) return toast('유튜브 링크를 확인해 주세요');
+    mutate((sl) => { if (v) sl.songs[i].youtube = v; else delete sl.songs[i].youtube; });
+  }
 });
 
 if (MODE === 'team') {
@@ -907,7 +1112,7 @@ if (MODE === 'team') {
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
 function addAdminTab() {
-  if (!(CAN_EDIT && serverSave) || document.querySelector('[data-tab=admin]')) return;
+  if (!(canEdit() && serverSave) || document.querySelector('[data-tab=admin]')) return;
   const a = document.createElement('a');
   a.href = '#/admin'; a.dataset.tab = 'admin'; a.textContent = '관리';
   document.querySelector('.tabs').appendChild(a);

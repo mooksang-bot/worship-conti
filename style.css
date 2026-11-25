@@ -258,9 +258,19 @@ body.locked .tabs, body.locked .logout { visibility: hidden; }
 .lock .pwrow input { flex: 1; min-width: 0; }
 .topbar .who { margin-left: auto; font-size: 12px; color: var(--accent); background: var(--accent-soft); padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
 .topbar .who:empty { display: none; }
-@media (max-width: 520px) { .topbar .who { display: none; } }
+@media (max-width: 520px) {
+  .topbar .brand { display: none; }
+  .topbar .who { max-width: 96px; overflow: hidden; text-overflow: ellipsis; font-size: 11px; padding: 3px 7px; }
+  .topbar .logout { padding: 4px 8px; }
+}
 .svc-card { border-top: 1px solid var(--line); padding: 12px 0 14px; }
 .svc-card:first-child { border-top: 0; }
 .svc-card h3 { margin: 0; font-size: 16px; }
 .svc-card .pwrow { display: flex; gap: 6px; align-items: center; }
 .svc-card .pwrow input { flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 10px; }
+.badge.new { background: #fde8c8; color: #9a5a00; }
+.draftline { margin: -4px 0 14px; padding: 8px 12px; border-radius: 8px; background: var(--warn-soft); color: var(--warn); font-size: 14px; }
+.imp { margin-top: 12px; padding: 12px; border: 1px dashed var(--line); border-radius: 10px; }
+.imp ol { margin: 6px 0; padding-left: 20px; }
+.svc-card .ld input { flex: 1 1 90px; }
+#loginrow input { width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); font-size: 16px; }
