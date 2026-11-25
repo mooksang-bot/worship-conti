@@ -256,3 +256,11 @@ body.locked .tabs, body.locked .logout { visibility: hidden; }
 #worship .w-hud { padding-top: max(8px, env(safe-area-inset-top)); }
 .lock .pwrow { display: flex; gap: 6px; align-items: center; }
 .lock .pwrow input { flex: 1; min-width: 0; }
+.topbar .who { margin-left: auto; font-size: 12px; color: var(--accent); background: var(--accent-soft); padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.topbar .who:empty { display: none; }
+@media (max-width: 520px) { .topbar .who { display: none; } }
+.svc-card { border-top: 1px solid var(--line); padding: 12px 0 14px; }
+.svc-card:first-child { border-top: 0; }
+.svc-card h3 { margin: 0; font-size: 16px; }
+.svc-card .pwrow { display: flex; gap: 6px; align-items: center; }
+.svc-card .pwrow input { flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 10px; }

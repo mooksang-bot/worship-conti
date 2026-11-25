@@ -6,8 +6,12 @@
 const MODE = window.SITE_MODE || 'local';
 const CAN_EDIT = MODE !== 'team';
 const KEY_ORDER = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
-const BASE_SERVICES = ['금요 찬양', '주일 오전'];
-const services = () => [...new Set([...BASE_SERVICES, ...setlists.map((x) => x.service)])];
+// 예배 목록: data/services.json (팀 사이트에서는 암호화된 lib.bin 안에 있음)
+let serviceList = [];
+const services = () => [...new Set([...serviceList.map((x) => x.name), ...setlists.map((x) => x.service)])];
+const serviceOf = (name) => serviceList.find((x) => x.name === name || (x.aliases || []).includes(name));
+// 예배 이름으로 기본 요일 정하기 (수=3, 금=5, 주일=0)
+const serviceDow = (name) => (/수요/.test(name) ? 3 : /금요/.test(name) ? 5 : /주일/.test(name) ? 0 : 5);
 const DAYS = ['일', '월', '화', '수', '목', '금', '토'];
 const LOCAL_KEY = 'worship.setlists.v1';
 const KEY_STORE = 'worship.teamkey.v1';
@@ -37,10 +41,12 @@ function setData(s, list) {
 
 async function load() {
   if (MODE === 'team') return loadTeam();
-  const [s, base] = await Promise.all([
+  const [s, base, svc] = await Promise.all([
     fetch('../data/songs.json', { cache: 'no-store' }).then((r) => r.json()),
     fetch('../data/setlists.json', { cache: 'no-store' }).then((r) => r.json()),
+    fetch('../data/services.json', { cache: 'no-store' }).then((r) => r.json()).catch(() => []),
   ]);
+  serviceList = svc;
   serverSave = await fetch('/api/ping', { cache: 'no-store' }).then((r) => r.ok).catch(() => false);
   const local = readLocal();
   const map = {};
@@ -84,28 +90,47 @@ function deleteSetlist(id) {
   persist();
 }
 
-/* ---------- 팀 사이트: 암호화된 데이터 열기 ---------- */
-let teamKey = null;
+/* ---------- 팀 사이트: 암호화된 데이터 열기 ----------
+   열쇠 구조
+   - 비밀번호(마스터·예배별) → PBKDF2 → '출입 열쇠'(KEK)
+   - meta.locks: 출입 열쇠로 잠근 상자들. 맞는 상자를 열면 { role, label, lib, svc:{예배id: 열쇠} } 가 나옴
+   - lib.bin(곡·악보함)과 악보 이미지는 lib 열쇠, svc-<id>.bin(그 예배 콘티)은 예배 열쇠로 잠겨 있음 */
+let libKey = null;            // 악보함 열쇠
+let svcKeys = {};             // { 예배id: 열쇠 }
+let access = null;            // { role: 'master'|'team', label }
 const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
-async function decryptBuf(buf) {
+const b64url = (s) => { const r = s.replace(/-/g, '+').replace(/_/g, '/'); return r + '==='.slice((r.length + 3) % 4); };
+async function decryptWith(key, buf) {
   const u = new Uint8Array(buf);
-  return crypto.subtle.decrypt({ name: 'AES-GCM', iv: u.slice(0, 12) }, teamKey, u.slice(12));
+  return crypto.subtle.decrypt({ name: 'AES-GCM', iv: u.slice(0, 12) }, key, u.slice(12));
 }
+const decryptBuf = (buf) => decryptWith(libKey, buf); // 악보 이미지용
+const importAes = (raw) => crypto.subtle.importKey('raw', raw, 'AES-GCM', true, ['decrypt']);
 async function deriveKey(password, meta) {
   const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
   return crypto.subtle.deriveKey({ name: 'PBKDF2', salt: b64(meta.salt), iterations: meta.iter, hash: 'SHA-256' },
     base, { name: 'AES-GCM', length: 256 }, true, ['decrypt']);
 }
-async function tryKey(key, meta) {
-  teamKey = key;
-  try { await decryptBuf(b64(meta.check)); return true; } catch { teamKey = null; return false; }
+// 출입 열쇠로 맞는 상자를 찾아 열기
+async function tryKey(kek, meta) {
+  for (const lock of meta.locks || []) {
+    try {
+      const box = JSON.parse(new TextDecoder().decode(await decryptWith(kek, b64(lock))));
+      libKey = await importAes(b64(box.lib));
+      svcKeys = {};
+      for (const [id, k] of Object.entries(box.svc || {})) svcKeys[id] = await importAes(b64(k));
+      access = { role: box.role, label: box.label };
+      return true;
+    } catch {}
+  }
+  return false;
 }
 async function loadTeam() {
   const meta = await fetch('meta.json', { cache: 'no-store' }).then((r) => r.json());
   let saved = null;
   try { saved = localStorage.getItem(KEY_STORE); } catch {}
   if (saved) {
-    const key = await crypto.subtle.importKey('raw', b64(saved), 'AES-GCM', true, ['decrypt']).catch(() => null);
+    const key = await importAes(b64(saved)).catch(() => null);
     if (!(key && (await tryKey(key, meta)))) { try { localStorage.removeItem(KEY_STORE); } catch {} }
   }
   // 초대 링크(#k=...)로 들어온 경우: 비밀번호 없이 열고 이 기기에 기억
@@ -113,22 +138,26 @@ async function loadTeam() {
   let inviteFailed = false;
   if (inv) {
     history.replaceState(null, '', location.pathname + location.search + '#/');
-    const raw = inv[1].replace(/-/g, '+').replace(/_/g, '/');
-    const key = await crypto.subtle.importKey('raw', b64(raw + '==='.slice((raw.length + 3) % 4)), 'AES-GCM', true, ['decrypt']).catch(() => null);
+    const key = await importAes(b64(b64url(inv[1]))).catch(() => null);
     if (key && (await tryKey(key, meta))) {
-      try { localStorage.setItem(KEY_STORE, inv[1].replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((raw.length + 3) % 4)); } catch {}
+      try { localStorage.setItem(KEY_STORE, b64url(inv[1])); } catch {}
     } else inviteFailed = true;
   }
-  if (!teamKey) await lockScreen(meta, inviteFailed);
-  const buf = await fetch('data.bin', { cache: 'no-store' }).then((r) => r.arrayBuffer());
-  const data = JSON.parse(new TextDecoder().decode(await decryptBuf(buf)));
-  setData(data.songs, data.setlists);
+  if (!libKey) await lockScreen(meta, inviteFailed);
+  const get = (f) => fetch(f, { cache: 'no-store' }).then((r) => r.arrayBuffer());
+  const lib = JSON.parse(new TextDecoder().decode(await decryptWith(libKey, await get('lib.bin'))));
+  serviceList = lib.services || [];
+  let list = [];
+  for (const [id, key] of Object.entries(svcKeys)) {
+    try { list = list.concat(JSON.parse(new TextDecoder().decode(await decryptWith(key, await get(`svc-${id}.bin`))))); } catch {}
+  }
+  setData(lib.songs, list);
 }
 const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 function lockScreen(meta, inviteFailed) {
   document.body.classList.add('locked');
   $('#app').innerHTML = `<div class="card lock"><h1>찬양팀 콘티</h1>
-    <p class="sub">${inviteFailed ? '초대 링크가 만료됐어요. 팀 비밀번호를 입력해 주세요' : '팀 비밀번호를 입력해 주세요'}</p>
+    <p class="sub">${inviteFailed ? '초대 링크가 만료됐어요. 예배 비밀번호를 입력해 주세요' : '예배 비밀번호를 입력해 주세요'}</p>
     <form id="lockform">
       <div class="pwrow"><input id="pw" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="비밀번호 또는 초대 링크 붙여넣기" autofocus>
         <button type="button" class="btn small" id="pwtoggle">보기</button></div>
@@ -324,7 +353,7 @@ function openAddTo(songId, key) {
     <div class="field"><label>콘티 선택</label>
       <select id="add-target">${opts}<option value="__new">＋ 새 콘티 만들기</option></select></div>
     <div id="new-fields" ${opts ? 'hidden' : ''}>
-      <div class="field"><label>날짜</label><input type="date" id="add-date" value="${nextDay(5)}"></div>
+      <div class="field"><label>날짜</label><input type="date" id="add-date" value="${nextDay(serviceDow(services()[0] || ""))}"></div>
       <div class="field"><label>예배</label><select id="add-svc">${services().map((x) => `<option>${x}</option>`).join('')}</select></div>
     </div>
     ${s.versions.length > 1 ? `<div class="field"><label>키</label><select id="add-key">${s.versions.map((v) => `<option ${v.key === key ? 'selected' : ''}>${esc(v.key)}</option>`).join('')}</select></div>` : ''}
@@ -334,7 +363,7 @@ function openAddTo(songId, key) {
   sel.value = opts ? sel.options[0].value : '__new';
   sel.addEventListener('change', () => ($('#new-fields').hidden = sel.value !== '__new'));
   $('#add-svc').addEventListener('change', (e) => {
-    $('#add-date').value = nextDay(e.target.value === '주일 오전' ? 0 : 5);
+    $('#add-date').value = nextDay(serviceDow(e.target.value));
   });
 }
 
@@ -362,11 +391,11 @@ function confirmAdd(songId, key) {
 function openNewSetlist() {
   openModal(`<h1>새 콘티</h1>
     <div class="field"><label>예배</label><select id="new-svc">${services().map((x) => `<option>${x}</option>`).join('')}</select></div>
-    <div class="field"><label>날짜</label><input type="date" id="new-date" value="${nextDay(5)}"></div>
+    <div class="field"><label>날짜</label><input type="date" id="new-date" value="${nextDay(serviceDow(services()[0] || ""))}"></div>
     <div class="row" style="margin-top:16px"><span class="spacer"></span>
       <button class="btn primary" data-act="new-confirm">만들기</button></div>`, true);
   $('#new-svc').addEventListener('change', (e) => {
-    $('#new-date').value = nextDay(e.target.value === '주일 오전' ? 0 : 5);
+    $('#new-date').value = nextDay(serviceDow(e.target.value));
   });
 }
 
@@ -682,23 +711,22 @@ function renderHistory() {
 /* ---------- 화면: 관리 (인도자 컴퓨터에서만) ---------- */
 function renderAdmin() {
   if (!(CAN_EDIT && serverSave)) return `<p class="empty">관리 메뉴는 인도자 컴퓨터에서만 쓸 수 있어요.<br><small>"인도자 화면 열기"로 열어 주세요.</small></p>`;
-  return `<h1>관리</h1><p class="sub">인도자(마스터)만 보이는 메뉴예요</p>
+  return `<h1>마스터 관리</h1><p class="sub">마스터만 보이는 메뉴예요 · 바꾼 내용은 [저장하고 반영]을 눌러야 팀 사이트에 적용돼요</p>
     <section class="card" style="padding:16px">
-      <h2 style="margin-top:0">팀 비밀번호</h2>
-      <p class="sub" style="margin:0 0 8px">팀원이 사이트에 들어올 때 쓰는 비밀번호예요.</p>
-      <div class="row"><span>현재 비밀번호:</span> <b id="curpw">••••••</b>
-        <button class="btn small" data-act="pw-show">보기</button></div>
-      <div class="field"><label>새 비밀번호 (영문·숫자 4자 이상, 한글·띄어쓰기 안 됨)</label><input type="password" id="pw1" autocomplete="new-password"></div>
-      <div class="field"><label>새 비밀번호 확인</label><input type="password" id="pw2" autocomplete="new-password"></div>
-      <div class="row" style="margin-top:12px"><button class="btn primary" data-act="pw-save">비밀번호 바꾸고 팀 사이트에 반영</button></div>
-      <p class="memo" style="color:var(--warn)">바꾸면 팀원 모두 새 비밀번호로 다시 들어와야 해요.</p>
+      <h2 style="margin-top:0">예배 · 인도자 · 팀원 비밀번호</h2>
+      <p class="sub" style="margin:0 0 8px">팀원은 자기 예배 비밀번호로 <b>그 예배 콘티 + 악보함</b>만 볼 수 있어요. 비밀번호를 비워 두면 그 예배는 마스터만 봐요.</p>
+      <div id="svc-admin"><p class="sub">불러오는 중…</p></div>
+      <div class="row" style="margin-top:14px"><button class="btn primary" data-act="svc-save">저장하고 팀 사이트에 반영</button></div>
+      <p class="memo" id="svcmsg"></p>
     </section>
     <section class="card" style="padding:16px;margin-top:16px">
-      <h2 style="margin-top:0">초대 링크 (카톡용)</h2>
-      <p class="sub" style="margin:0 0 8px">팀원이 누르기만 하면 비밀번호 없이 열려요. 팀 단톡방에만 올려 주세요.</p>
-      <div class="row"><button class="btn primary" data-act="invite-copy">카톡 공지 + 초대 링크 복사</button>
-        <button class="btn" data-act="invite-link">링크만 복사</button></div>
-      <p class="memo">링크가 다른 곳에 퍼졌다면 위에서 비밀번호를 바꾸세요. 예전 초대 링크는 바로 막혀요.</p>
+      <h2 style="margin-top:0">마스터 비밀번호 <small class="sub">(모든 예배 보기)</small></h2>
+      <div class="row"><span>현재:</span> <b id="curpw">••••••</b>
+        <button class="btn small" data-act="pw-show">보기</button>
+        <button class="btn small" data-act="svc-invite" data-sid="master">마스터 초대 링크 복사</button></div>
+      <div class="field"><label>새 비밀번호 (영문·숫자 4자 이상, 한글·띄어쓰기 안 됨)</label><input type="password" id="pw1" autocomplete="new-password"></div>
+      <div class="field"><label>새 비밀번호 확인</label><input type="password" id="pw2" autocomplete="new-password"></div>
+      <div class="row" style="margin-top:12px"><button class="btn" data-act="pw-save">마스터 비밀번호 바꾸고 반영</button></div>
     </section>
     <section class="card" style="padding:16px;margin-top:16px">
       <h2 style="margin-top:0">팀 사이트에 반영</h2>
@@ -706,6 +734,39 @@ function renderAdmin() {
       <button class="btn primary" data-act="deploy">지금 반영하기</button>
       <p class="memo" id="deploymsg"></p>
     </section>`;
+}
+let adminSvc = [];
+async function loadSvcAdmin() {
+  adminSvc = await fetch('/api/services', { cache: 'no-store' }).then((r) => r.json()).catch(() => []);
+  drawSvcAdmin();
+}
+function drawSvcAdmin() {
+  const box = $('#svc-admin');
+  if (!box) return;
+  box.innerHTML = adminSvc.map((x, si) => `
+    <div class="svc-card" data-si="${si}">
+      <div class="row"><h3>${esc(x.name)}</h3>
+        <span class="badge ${x.password ? '' : 'none'}">${x.password ? '팀원 공개' : '마스터만'}</span>
+        <span class="spacer"></span>
+        <button class="btn small" data-act="svc-invite" data-sid="${esc(x.id)}" ${x.password ? '' : 'disabled'}>초대 링크 복사</button></div>
+      <div class="field"><label>팀원 비밀번호 (영문·숫자 4자 이상 · 비우면 팀원 접근 안 됨)</label>
+        <div class="pwrow"><input type="password" class="svc-pw" value="${esc(x.password || '')}" autocomplete="off">
+          <button class="btn small" data-act="svc-pwshow">보기</button></div></div>
+      <div class="field"><label>인도자</label>
+        ${(x.leaders || []).map((l, li) => `<div class="pwrow ld" style="margin-top:6px">
+          <input class="ld-name" placeholder="이름" value="${esc(l.name)}">
+          <input class="ld-login" placeholder="아이디 (예: fri1)" value="${esc(l.login || '')}">
+          <button class="btn small danger" data-act="ld-rm" data-si="${si}" data-li="${li}">삭제</button></div>`).join('') || '<p class="sub" style="margin:2px 0">아직 인도자가 없어요</p>'}
+        <div><button class="btn small" data-act="ld-add" data-si="${si}" style="margin-top:6px">＋ 인도자 추가</button></div></div>
+    </div>`).join('');
+}
+// 화면에 입력한 값을 adminSvc 에 반영
+function collectSvcAdmin() {
+  document.querySelectorAll('.svc-card').forEach((c) => {
+    const x = adminSvc[+c.dataset.si];
+    x.password = c.querySelector('.svc-pw').value.trim();
+    x.leaders = [...c.querySelectorAll('.ld')].map((r) => ({ name: r.querySelector('.ld-name').value.trim(), login: r.querySelector('.ld-login').value.trim() }));
+  });
 }
 async function adminCall(path, body, btn) {
   const label = btn.textContent;
@@ -722,7 +783,7 @@ function render() {
   let tab = 'home', html;
   if (h.startsWith('#/library')) { tab = 'library'; html = renderLibrary(); }
   else if (h.startsWith('#/history')) { tab = 'history'; html = renderHistory(); }
-  else if (h.startsWith('#/admin')) { tab = 'admin'; html = renderAdmin(); }
+  else if (h.startsWith('#/admin')) { tab = 'admin'; html = renderAdmin(); setTimeout(loadSvcAdmin); }
   else if (h.startsWith('#/setlist/')) { html = renderSetlist(decodeURIComponent(h.slice(10))); }
   else html = renderHome();
   document.querySelectorAll('.tabs a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab));
@@ -772,20 +833,37 @@ document.addEventListener('click', async (e) => {
       if (a.length < 4) return toast('비밀번호는 4자 이상이어야 해요');
       if (!/^[\x21-\x7E]+$/.test(a)) return toast('영문·숫자·기호만 쓸 수 있어요 (아이폰은 비밀번호 칸에 한글 입력이 안 돼요)');
       if (a !== b2) return toast('두 비밀번호가 서로 달라요');
-      if (!confirm('팀 비밀번호를 바꾸고 팀 사이트에 반영할까요?\n팀원 모두 새 비밀번호로 다시 들어와야 해요.')) return;
+      if (!confirm('마스터 비밀번호를 바꾸고 팀 사이트에 반영할까요?')) return;
       const r = await adminCall('/api/password', { password: a }, el);
       if (r.ok) { $('#pw1').value = $('#pw2').value = ''; $('#curpw').textContent = '••••••'; toast('비밀번호를 바꿨어요. 1~2분 뒤 팀 사이트에 적용돼요'); }
       else toast('실패: ' + r.text);
       break;
     }
-    case 'invite-copy':
-    case 'invite-link': {
-      const r = await fetch('/api/invite').then(async (x) => ({ ok: x.ok, text: await x.text() })).catch(() => ({ ok: false, text: '연결 실패' }));
+    case 'svc-pwshow': {
+      const inp = el.parentElement.querySelector('input');
+      inp.type = inp.type === 'password' ? 'text' : 'password'; el.textContent = inp.type === 'password' ? '보기' : '숨기기'; break;
+    }
+    case 'ld-add': collectSvcAdmin(); adminSvc[+el.dataset.si].leaders.push({ name: '', login: '' }); drawSvcAdmin(); break;
+    case 'ld-rm': collectSvcAdmin(); adminSvc[+el.dataset.si].leaders.splice(+el.dataset.li, 1); drawSvcAdmin(); break;
+    case 'svc-save': {
+      collectSvcAdmin();
+      for (const x of adminSvc) {
+        if (x.password && (x.password.length < 4 || !/^[\x21-\x7E]+$/.test(x.password))) return toast(`${x.name}: 비밀번호는 영문·숫자 4자 이상이어야 해요`);
+      }
+      const r = await adminCall('/api/services', { services: adminSvc }, el);
+      $('#svcmsg').textContent = r.ok ? '✅ 저장했어요 · 1~2분 뒤 팀 사이트에 적용돼요' : '❌ ' + r.text;
+      if (r.ok) loadSvcAdmin();
+      break;
+    }
+    case 'svc-invite': {
+      const sid = el.dataset.sid;
+      const r = await fetch('/api/invite?id=' + encodeURIComponent(sid)).then(async (x) => ({ ok: x.ok, text: await x.text() })).catch(() => ({ ok: false, text: '연결 실패' }));
       if (!r.ok) return toast(r.text);
-      const text = act === 'invite-link' ? r.text
-        : `🎵 찬양팀 콘티 사이트\n이번 주 콘티 · 악보 · 유튜브를 한곳에서 볼 수 있어요.\n아래 링크를 누르면 바로 열려요 (비밀번호 필요 없음)\n${r.text}\n\n📱 홈 화면에 추가하면 앱처럼 쓸 수 있어요\n⚠ 팀원 외에는 공유하지 말아 주세요`;
-      try { await navigator.clipboard.writeText(text); toast('복사했어요. 카톡 단톡방에 붙여넣으세요'); }
-      catch { openModal(`<h1>초대 링크</h1><textarea style="width:100%;height:220px">${esc(text)}</textarea>`); }
+      const name = sid === 'master' ? '마스터' : (adminSvc.find((x) => x.id === sid) || {}).name || '';
+      const text = sid === 'master' ? r.text
+        : `🎵 ${name} 찬양팀 콘티\n이번 주 콘티 · 악보 · 유튜브를 한곳에서 볼 수 있어요.\n아래 링크를 누르면 바로 열려요 (비밀번호 필요 없음)\n${r.text}\n\n📱 홈 화면에 추가하면 앱처럼 쓸 수 있어요\n⚠ ${name} 팀원 외에는 공유하지 말아 주세요`;
+      try { await navigator.clipboard.writeText(text); toast(`${name} 초대 링크를 복사했어요`); }
+      catch { openModal(`<h1>${esc(name)} 초대 링크</h1><textarea style="width:100%;height:220px">${esc(text)}</textarea>`); }
       break;
     }
     case 'deploy': {
@@ -820,6 +898,9 @@ if (MODE === 'team') {
   const b = document.createElement('button');
   b.className = 'btn small logout'; b.textContent = '잠그기'; b.title = '이 기기에서 비밀번호 지우기';
   b.addEventListener('click', logout);
+  const who = document.createElement('span');
+  who.className = 'who'; who.id = 'who';
+  document.querySelector('.topbar').appendChild(who);
   document.querySelector('.topbar').appendChild(b);
 }
 
@@ -832,6 +913,6 @@ function addAdminTab() {
   document.querySelector('.tabs').appendChild(a);
 }
 
-load().then(() => { addAdminTab(); render(); }).catch((err) => {
+load().then(() => { addAdminTab(); if (access && $('#who')) $('#who').textContent = access.role === 'master' ? '마스터' : access.label; render(); }).catch((err) => {
   $('#app').innerHTML = `<p class="empty">데이터를 불러오지 못했어요.<br><small>${esc(err.message)}</small></p>`;
 });
