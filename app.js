@@ -246,7 +246,7 @@ function closeModal() {
 $('#modal').addEventListener('click', (e) => {
   if (e.target.id === 'modal' || e.target.closest('[data-close]')) closeModal();
 });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !wm) closeModal(); });
 
 function openYoutube(songId, url) {
   const s = songMap[songId];
@@ -340,6 +340,106 @@ function openNewSetlist() {
     $('#new-date').value = nextDay(e.target.value === '주일 오전' ? 0 : 5);
   });
 }
+
+
+/* ---------- 예배 모드 (전체화면 악보 넘기기) ---------- */
+let wm = null; // { pages, i, fit, hud, lock }
+function openWorship(sl) {
+  if (!sl || !sl.songs.length) return;
+  const pages = [];
+  sl.songs.forEach((it, si) => {
+    const s = songMap[it.songId];
+    if (!s) return;
+    const v = versionOf(s, it.key);
+    const meta = { si, title: s.title, key: it.key || v.key, flow: v.flow || s.flow, note: it.note, link: it.linkNext };
+    if (v.files.length) v.files.forEach((f, pi) => pages.push({ ...meta, file: f, pi, pn: v.files.length }));
+    else pages.push({ ...meta, file: null, pi: 0, pn: 1 });
+  });
+  const titles = sl.songs.map((it) => (songMap[it.songId] || {}).title || '');
+  const el = document.createElement('div');
+  el.id = 'worship';
+  el.innerHTML = `
+    <div class="w-hud">
+      <div class="w-top"><span class="w-pos"></span><span class="w-title"></span><span class="spacer"></span>
+        <button class="w-btn" data-w="fit" title="화면 맞춤 바꾸기">↔</button>
+        <button class="w-btn" data-w="close" aria-label="닫기">✕</button></div>
+      <div class="w-flow"></div>
+    </div>
+    <div class="w-stage">${pages.map((pg, k) => `<div class="w-page" data-k="${k}" hidden>${pg.file
+        ? `<img data-watch="1" data-src="${esc(pg.file)}" alt="${esc(pg.title)} 악보">`
+        : `<div class="w-noscore"><div class="t">${esc(pg.title)}</div><div class="k">${esc(pg.key || '')}</div><div class="f">${esc(pg.flow || '악보 없음')}</div></div>`}</div>`).join('')}</div>
+    <div class="w-next"></div>`;
+  document.body.appendChild(el);
+  document.body.style.overflow = 'hidden';
+  wm = { el, pages, titles, i: 0, fit: innerWidth < 600 ? 'width' : 'screen', hud: true, lock: null };
+  el.classList.add('fit-' + wm.fit);
+  // 전체화면 + 화면 꺼짐 방지 (지원하는 기기에서만)
+  try { const r = document.documentElement.requestFullscreen; if (r) document.documentElement.requestFullscreen().catch(() => {}); } catch {}
+  keepAwake();
+  el.addEventListener('click', onWorshipClick);
+  el.addEventListener('touchstart', (e) => { wm.tx = e.touches[0].clientX; wm.ty = e.touches[0].clientY; }, { passive: true });
+  el.addEventListener('touchend', (e) => {
+    const dx = e.changedTouches[0].clientX - wm.tx, dy = e.changedTouches[0].clientY - wm.ty;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) { wm.swiped = true; go(dx < 0 ? 1 : -1); }
+  }, { passive: true });
+  showPage(0);
+}
+async function keepAwake() {
+  try { if ('wakeLock' in navigator) wm.lock = await navigator.wakeLock.request('screen'); } catch {}
+}
+document.addEventListener('visibilitychange', () => { if (wm && document.visibilityState === 'visible') keepAwake(); });
+function closeWorship() {
+  if (!wm) return;
+  try { wm.lock && wm.lock.release(); } catch {}
+  try { if (document.fullscreenElement) document.exitFullscreen(); } catch {}
+  wm.el.remove(); wm = null;
+  document.body.style.overflow = '';
+}
+function go(d) { if (wm) showPage(Math.max(0, Math.min(wm.pages.length - 1, wm.i + d))); }
+function showPage(k) {
+  const { el, pages } = wm;
+  wm.i = k;
+  el.querySelectorAll('.w-page').forEach((p) => (p.hidden = +p.dataset.k !== k));
+  // 현재·앞뒤 장 미리 불러오기
+  [k, k + 1, k - 1, k + 2].forEach((j) => {
+    const img = el.querySelector(`.w-page[data-k="${j}"] img[data-src]`);
+    if (img) hydrateImg(img);
+  });
+  const cur = el.querySelector(`.w-page[data-k="${k}"]`);
+  cur.scrollTop = 0;
+  const pg = pages[k];
+  el.querySelector('.w-pos').textContent = `${pg.si + 1}/${wm.titles.length}`;
+  el.querySelector('.w-title').innerHTML = `${esc(pg.title)} ${keyBadge(pg.key)}${pg.pn > 1 ? ` <small>${pg.pi + 1}/${pg.pn}쪽</small>` : ''}`;
+  el.querySelector('.w-flow').textContent = [pg.flow, pg.note].filter(Boolean).join('  ·  ');
+  const nextSong = wm.titles[pg.si + 1];
+  const lastPageOfSong = pg.pi === pg.pn - 1;
+  el.querySelector('.w-next').textContent = lastPageOfSong
+    ? (nextSong ? `다음 ${pg.link ? '(이어서) ' : ''}▶ ${nextSong}` : '마지막 곡') : `다음 쪽 ▶`;
+}
+function onWorshipClick(e) {
+  const b = e.target.closest('[data-w]');
+  if (b) {
+    if (b.dataset.w === 'close') closeWorship();
+    if (b.dataset.w === 'fit') {
+      wm.el.classList.remove('fit-' + wm.fit);
+      wm.fit = wm.fit === 'screen' ? 'width' : 'screen';
+      wm.el.classList.add('fit-' + wm.fit);
+    }
+    return;
+  }
+  if (wm.swiped) { wm.swiped = false; return; }
+  if (e.target.closest('.w-hud')) return;
+  const x = e.clientX / innerWidth;
+  if (x < 0.3) go(-1);
+  else if (x > 0.7) go(1);
+  else { wm.hud = !wm.hud; wm.el.classList.toggle('hud-off', !wm.hud); }
+}
+document.addEventListener('keydown', (e) => {
+  if (!wm) return;
+  if (['ArrowRight', 'ArrowDown', 'PageDown', ' ', 'Enter'].includes(e.key)) { e.preventDefault(); go(1); }
+  else if (['ArrowLeft', 'ArrowUp', 'PageUp', 'Backspace'].includes(e.key)) { e.preventDefault(); go(-1); }
+  else if (e.key === 'Escape') closeWorship();
+});
 
 /* ---------- 화면: 홈 ---------- */
 function setlistCard(x) {
@@ -472,6 +572,7 @@ function renderSetlist(id) {
       <div><div class="sub" style="margin:0;color:var(--accent);font-weight:500">${esc(sl.service)}${sl.meetTime ? ` · ${esc(sl.meetTime)} 모임` : ''}</div>
         <h1>${fmtDate(sl.date)}</h1></div>
       <span class="spacer"></span>
+      ${sl.songs.length ? '<button class="btn primary" data-act="worship">▶ 예배 모드</button>' : ''}
       <button class="btn" data-act="copy">카톡용 복사</button>
       ${CAN_EDIT ? `<button class="btn ${ed ? 'primary' : ''}" data-act="edit">${ed ? '편집 완료' : '편집'}</button>` : ''}
     </div>
@@ -593,6 +694,7 @@ document.addEventListener('click', async (e) => {
     case 'edit': ui.editing = !ui.editing; render(); break;
     case 'mv': mutate((sl) => { const a = +i, b = a + +d; [sl.songs[a], sl.songs[b]] = [sl.songs[b], sl.songs[a]]; }); break;
     case 'rm': mutate((sl) => sl.songs.splice(+i, 1)); break;
+    case 'worship': openWorship(currentSetlist()); break;
     case 'copy': {
       const text = copyText(currentSetlist());
       try { await navigator.clipboard.writeText(text); toast('카톡에 붙여넣을 수 있게 복사했어요'); }

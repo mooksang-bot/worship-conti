@@ -214,3 +214,39 @@ h2 { font-size: 17px; margin: 28px 0 10px; }
 }
 body.locked .tabs, body.locked .logout { visibility: hidden; }
 .topbar .logout { margin-left: 8px; }
+
+/* 예배 모드 */
+#worship {
+  position: fixed; inset: 0; z-index: 100; background: #111; color: #eee;
+  display: flex; flex-direction: column; user-select: none; -webkit-user-select: none;
+}
+#worship .w-hud {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 2; padding: 8px 12px 10px;
+  background: linear-gradient(rgba(0,0,0,.85), rgba(0,0,0,.6)); transition: opacity .2s;
+}
+#worship.hud-off .w-hud, #worship.hud-off .w-next { opacity: 0; pointer-events: none; }
+#worship .w-top { display: flex; align-items: center; gap: 10px; }
+#worship .w-pos { font-weight: 700; color: #8cc3b0; }
+#worship .w-title { font-weight: 700; font-size: 16px; }
+#worship .w-title small { color: #aaa; font-weight: 400; }
+#worship .w-flow { font-size: 13px; color: #ccc; margin-top: 2px; }
+#worship .w-btn {
+  border: 0; background: rgba(255,255,255,.14); color: #fff; width: 38px; height: 38px;
+  border-radius: 50%; font-size: 17px; cursor: pointer;
+}
+#worship .w-stage { flex: 1; position: relative; }
+#worship .w-page { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+#worship .w-page[hidden] { display: none; }
+#worship.fit-screen .w-page img { max-width: 100%; max-height: 100%; object-fit: contain; background: #fff; }
+#worship.fit-width .w-page { overflow-y: auto; align-items: flex-start; padding-top: 64px; }
+#worship.fit-width .w-page img { width: 100%; height: auto; background: #fff; }
+#worship .w-noscore { text-align: center; padding: 24px; }
+#worship .w-noscore .t { font-size: 30px; font-weight: 700; }
+#worship .w-noscore .k { font-size: 22px; color: #8cc3b0; margin: 8px 0; }
+#worship .w-noscore .f { font-size: 17px; color: #ccc; }
+#worship .w-next {
+  position: absolute; right: 12px; bottom: 12px; z-index: 2; font-size: 13px;
+  background: rgba(0,0,0,.7); padding: 6px 12px; border-radius: 999px; transition: opacity .2s;
+}
+#worship.fit-screen:not(.hud-off) .w-page { padding-top: 78px; }
+#worship.fit-screen .w-page { padding-bottom: 8px; transition: padding .2s; }
