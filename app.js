@@ -128,7 +128,7 @@ async function tryKey(kek, meta) {
       libKey = await importAes(b64(box.lib));
       svcKeys = {};
       for (const [id, k] of Object.entries(box.svc || {})) svcKeys[id] = await importAes(b64(k));
-      access = { role: box.role, label: box.label, name: box.name, login: box.login, sids: Object.keys(box.svc || {}) };
+      access = { role: box.role, label: box.label, name: box.name, login: box.login, people: box.people || [], sids: Object.keys(box.svc || {}) };
       return true;
     } catch {}
   }
@@ -509,6 +509,7 @@ function openSend() {
   const newCount = sl.songs.filter((it) => (songMap[it.songId] || {})._new).length;
   openModal(`<h1>📤 마스터에게 보내기</h1>
     <p class="sub">${fmtDate(sl.date)} ${esc(sl.service)} · 곡 ${sl.songs.length}개${newCount ? ` · 새 곡 ${newCount}개(악보 포함)` : ''}</p>
+    ${(access.people || []).length > 1 ? `<div class="field"><label>보내는 사람</label><select id="sd-who">${access.people.map((n) => `<option ${n === readJSON('worship.me.v1', '') ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></div>` : ''}
     <div class="field"><label>마스터에게 남길 말 (선택)</label><textarea id="sd-msg" rows="2" placeholder="예: 3번 곡 키를 한 키 올렸어요"></textarea></div>
     <div class="field"><label>${esc(sl.service)} 팀원 비밀번호 바꾸기 요청 (선택 · 영문·숫자 4자 이상)</label><input id="sd-pw" autocapitalize="off" autocorrect="off"></div>
     <div class="row" style="margin-top:14px"><span class="spacer"></span><button class="btn primary" data-act="send-go">보내기 파일 만들기</button></div>
@@ -527,10 +528,12 @@ async function sendGo(btn) {
     for (const f of s.versions[0].files) { const b = await idbGet(f.slice(4)); if (b) files.push(await blobToDataURL(b)); }
     newSongs.push({ tempId: id, title: s.title, key: s.versions[0].key, youtube: s.youtube, flow: s.flow, files });
   }
+  const who = $('#sd-who') ? $('#sd-who').value : access.name || '';
+  if ($('#sd-who')) writeJSON('worship.me.v1', who);
   const sub = { type: 'worship-conti-submission', v: 1, createdAt: new Date().toISOString(),
-    from: { name: access.name || '', login: access.login || '' }, service: sl.service, setlist: sl, newSongs,
+    from: { name: who, login: access.login || '' }, service: sl.service, setlist: sl, newSongs,
     message: $('#sd-msg').value.trim(), passwordRequest: pw || null };
-  const name = `콘티_${sl.date}_${sl.service}_${access.name || access.login || '인도자'}.json`.replace(/\s+/g, '');
+  const name = `콘티_${sl.date}_${sl.service}_${who || access.login || '인도자'}.json`.replace(/\s+/g, '');
   const file = new File([JSON.stringify(sub)], name, { type: 'application/json' });
   const done = (how) => {
     const sent = readJSON(SENT_KEY, {});
