@@ -250,3 +250,7 @@ body.locked .tabs, body.locked .logout { visibility: hidden; }
 }
 #worship.fit-screen:not(.hud-off) .w-page { padding-top: 78px; }
 #worship.fit-screen .w-page { padding-bottom: 8px; transition: padding .2s; }
+
+/* 앱으로 설치했을 때 (아이폰 노치 영역) */
+.topbar { padding-top: max(10px, env(safe-area-inset-top)); }
+#worship .w-hud { padding-top: max(8px, env(safe-area-inset-top)); }

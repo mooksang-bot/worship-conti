@@ -725,6 +725,8 @@ if (MODE === 'team') {
   document.querySelector('.topbar').appendChild(b);
 }
 
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+
 load().then(render).catch((err) => {
   $('#app').innerHTML = `<p class="empty">데이터를 불러오지 못했어요.<br><small>${esc(err.message)}</small></p>`;
 });
