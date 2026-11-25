@@ -649,12 +649,44 @@ function renderHistory() {
     <h2>날짜별 기록</h2>${items}`;
 }
 
+
+/* ---------- 화면: 관리 (인도자 컴퓨터에서만) ---------- */
+function renderAdmin() {
+  if (!(CAN_EDIT && serverSave)) return `<p class="empty">관리 메뉴는 인도자 컴퓨터에서만 쓸 수 있어요.<br><small>"인도자 화면 열기"로 열어 주세요.</small></p>`;
+  return `<h1>관리</h1><p class="sub">인도자(마스터)만 보이는 메뉴예요</p>
+    <section class="card" style="padding:16px">
+      <h2 style="margin-top:0">팀 비밀번호</h2>
+      <p class="sub" style="margin:0 0 8px">팀원이 사이트에 들어올 때 쓰는 비밀번호예요.</p>
+      <div class="row"><span>현재 비밀번호:</span> <b id="curpw">••••••</b>
+        <button class="btn small" data-act="pw-show">보기</button></div>
+      <div class="field"><label>새 비밀번호 (4자 이상)</label><input type="password" id="pw1" autocomplete="new-password"></div>
+      <div class="field"><label>새 비밀번호 확인</label><input type="password" id="pw2" autocomplete="new-password"></div>
+      <div class="row" style="margin-top:12px"><button class="btn primary" data-act="pw-save">비밀번호 바꾸고 팀 사이트에 반영</button></div>
+      <p class="memo" style="color:var(--warn)">바꾸면 팀원 모두 새 비밀번호로 다시 들어와야 해요.</p>
+    </section>
+    <section class="card" style="padding:16px;margin-top:16px">
+      <h2 style="margin-top:0">팀 사이트에 반영</h2>
+      <p class="sub" style="margin:0 0 8px">콘티를 편집한 뒤 누르면 팀원 사이트가 업데이트돼요 (1~2분).</p>
+      <button class="btn primary" data-act="deploy">지금 반영하기</button>
+      <p class="memo" id="deploymsg"></p>
+    </section>`;
+}
+async function adminCall(path, body, btn) {
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = '반영 중… (최대 1분)';
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) })
+    .then(async (x) => ({ ok: x.ok, text: await x.text() })).catch((e) => ({ ok: false, text: String(e) }));
+  btn.disabled = false; btn.textContent = label;
+  return r;
+}
+
 /* ---------- 라우터 ---------- */
 function render() {
   const h = location.hash || '#/';
   let tab = 'home', html;
   if (h.startsWith('#/library')) { tab = 'library'; html = renderLibrary(); }
   else if (h.startsWith('#/history')) { tab = 'history'; html = renderHistory(); }
+  else if (h.startsWith('#/admin')) { tab = 'admin'; html = renderAdmin(); }
   else if (h.startsWith('#/setlist/')) { html = renderSetlist(decodeURIComponent(h.slice(10))); }
   else html = renderHome();
   document.querySelectorAll('.tabs a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab));
@@ -695,6 +727,25 @@ document.addEventListener('click', async (e) => {
     case 'mv': mutate((sl) => { const a = +i, b = a + +d; [sl.songs[a], sl.songs[b]] = [sl.songs[b], sl.songs[a]]; }); break;
     case 'rm': mutate((sl) => sl.songs.splice(+i, 1)); break;
     case 'worship': openWorship(currentSetlist()); break;
+    case 'pw-show': {
+      const t = await fetch('/api/password').then((r) => r.text()).catch(() => '');
+      $('#curpw').textContent = t || '(없음)'; break;
+    }
+    case 'pw-save': {
+      const a = $('#pw1').value.trim(), b2 = $('#pw2').value.trim();
+      if (a.length < 4) return toast('비밀번호는 4자 이상이어야 해요');
+      if (a !== b2) return toast('두 비밀번호가 서로 달라요');
+      if (!confirm('팀 비밀번호를 바꾸고 팀 사이트에 반영할까요?\n팀원 모두 새 비밀번호로 다시 들어와야 해요.')) return;
+      const r = await adminCall('/api/password', { password: a }, el);
+      if (r.ok) { $('#pw1').value = $('#pw2').value = ''; $('#curpw').textContent = '••••••'; toast('비밀번호를 바꿨어요. 1~2분 뒤 팀 사이트에 적용돼요'); }
+      else toast('실패: ' + r.text);
+      break;
+    }
+    case 'deploy': {
+      const r = await adminCall('/api/deploy', {}, el);
+      $('#deploymsg').textContent = r.ok ? '✅ ' + r.text + ' · 1~2분 뒤 팀 사이트에 보여요' : '❌ ' + r.text;
+      break;
+    }
     case 'copy': {
       const text = copyText(currentSetlist());
       try { await navigator.clipboard.writeText(text); toast('카톡에 붙여넣을 수 있게 복사했어요'); }
@@ -727,6 +778,13 @@ if (MODE === 'team') {
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
-load().then(render).catch((err) => {
+function addAdminTab() {
+  if (!(CAN_EDIT && serverSave) || document.querySelector('[data-tab=admin]')) return;
+  const a = document.createElement('a');
+  a.href = '#/admin'; a.dataset.tab = 'admin'; a.textContent = '관리';
+  document.querySelector('.tabs').appendChild(a);
+}
+
+load().then(() => { addAdminTab(); render(); }).catch((err) => {
   $('#app').innerHTML = `<p class="empty">데이터를 불러오지 못했어요.<br><small>${esc(err.message)}</small></p>`;
 });
