@@ -901,11 +901,10 @@ function renderAdmin() {
     </section>
     <section class="card" style="padding:16px;margin-top:16px">
       <h2 style="margin-top:0">마스터 비밀번호 <small class="sub">(모든 예배 보기)</small></h2>
-      <div class="row"><span>현재:</span> <b id="curpw">••••••</b>
-        <button class="btn small" data-act="pw-show">보기</button>
+      <div class="row"><span>현재:</span> <b id="curpw">불러오는 중…</b>
         <button class="btn small" data-act="svc-invite" data-sid="master">마스터 초대 링크 복사</button></div>
-      <div class="field"><label>새 비밀번호 (영문·숫자 4자 이상, 한글·띄어쓰기 안 됨)</label><input type="password" id="pw1" autocomplete="new-password"></div>
-      <div class="field"><label>새 비밀번호 확인</label><input type="password" id="pw2" autocomplete="new-password"></div>
+      <div class="field"><label>새 비밀번호 (영문·숫자 4자 이상, 한글·띄어쓰기 안 됨)</label><input type="text" id="pw1" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+      <div class="field"><label>새 비밀번호 확인</label><input type="text" id="pw2" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
       <div class="row" style="margin-top:12px"><button class="btn" data-act="pw-save">마스터 비밀번호 바꾸고 반영</button></div>
     </section>
     <section class="card" style="padding:16px;margin-top:16px">
@@ -918,6 +917,8 @@ function renderAdmin() {
 let adminSvc = [];
 async function loadSvcAdmin() {
   adminSvc = await fetch('/api/services', { cache: 'no-store' }).then((r) => r.json()).catch(() => []);
+  const cur = await fetch('/api/password', { cache: 'no-store' }).then((r) => r.text()).catch(() => '');
+  if ($('#curpw')) $('#curpw').textContent = cur || '(없음)';
   drawSvcAdmin();
 }
 function drawSvcAdmin() {
@@ -930,14 +931,13 @@ function drawSvcAdmin() {
         <span class="spacer"></span>
         <button class="btn small" data-act="svc-invite" data-sid="${esc(x.id)}" ${x.password ? '' : 'disabled'}>초대 링크 복사</button></div>
       <div class="field"><label>팀원 비밀번호 (영문·숫자 4자 이상 · 비우면 팀원 접근 안 됨)</label>
-        <div class="pwrow"><input type="password" class="svc-pw" value="${esc(x.password || '')}" autocomplete="off">
-          <button class="btn small" data-act="svc-pwshow">보기</button></div></div>
+        <div class="pwrow"><input type="text" class="svc-pw" value="${esc(x.password || '')}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="예: fri2026"></div></div>
       <div class="field"><label>인도자</label>
         <p class="sub" style="margin:0 0 2px;font-size:12px">아이디·로그인 비밀번호를 넣으면 그 인도자가 팀 사이트에서 '인도자 로그인'으로 콘티를 쓸 수 있어요</p>
         ${(x.leaders || []).map((l, li) => `<div class="pwrow ld" style="margin-top:6px">
           <input class="ld-name" placeholder="이름" value="${esc(l.name)}">
           <input class="ld-login" placeholder="아이디 (예: fri1)" value="${esc(l.login || '')}" autocapitalize="off">
-          <input class="ld-pw" type="password" placeholder="로그인 비밀번호" value="${esc(l.password || '')}" autocomplete="off">
+          <input class="ld-pw" type="text" autocapitalize="off" spellcheck="false" placeholder="로그인 비밀번호" value="${esc(l.password || '')}" autocomplete="off">
           <button class="btn small danger" data-act="ld-rm" data-si="${si}" data-li="${li}">삭제</button></div>`).join('') || '<p class="sub" style="margin:2px 0">아직 인도자가 없어요</p>'}
         <div><button class="btn small" data-act="ld-add" data-si="${si}" style="margin-top:6px">＋ 인도자 추가</button></div></div>
     </div>`).join('');
@@ -1030,7 +1030,7 @@ document.addEventListener('click', async (e) => {
       if (a !== b2) return toast('두 비밀번호가 서로 달라요');
       if (!confirm('마스터 비밀번호를 바꾸고 팀 사이트에 반영할까요?')) return;
       const r = await adminCall('/api/password', { password: a }, el);
-      if (r.ok) { $('#pw1').value = $('#pw2').value = ''; $('#curpw').textContent = '••••••'; toast('비밀번호를 바꿨어요. 1~2분 뒤 팀 사이트에 적용돼요'); }
+      if (r.ok) { $('#curpw').textContent = a; $('#pw1').value = $('#pw2').value = ''; toast('비밀번호를 바꿨어요. 1~2분 뒤 팀 사이트에 적용돼요'); }
       else toast('실패: ' + r.text);
       break;
     }
